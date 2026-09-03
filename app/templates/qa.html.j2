@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ doc.title }} | Firstsource Response</title>
+<style>
+{% include "_brand.css.j2" %}
+.toc{background:var(--fs-gray);border-radius:12px;padding:18px 22px;margin-bottom:28px;}
+.toc h3{font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--fs-dark);margin-bottom:10px;}
+.toc ol{margin-left:18px;font-size:13.5px;}
+.toc li{margin-bottom:6px;}
+.count{display:inline-block;background:var(--fs-orange);color:#fff;font-weight:700;font-size:12px;
+  border-radius:20px;padding:5px 14px;margin-top:14px;}
+</style>
+</head>
+<body>
+<div class="head">
+  <div>
+    <h1>{{ doc.title }}</h1>
+    {% if doc.subtitle %}<p>{{ doc.subtitle }}</p>{% endif %}
+    {% if question_count %}<span class="count">{{ question_count }} question{{ '' if question_count == 1 else 's' }} answered</span>{% endif %}
+  </div>
+  <img src="{{ logo_white }}" alt="Firstsource">
+</div>
+
+<div class="wrap">
+  {% if doc.metrics %}
+  <div class="metrics">
+    {% for metric in doc.metrics %}
+    <div class="metric{% if metric.accent %} accent{% endif %}">
+      <div class="v">{{ metric.value }}</div>
+      <div class="l">{{ metric.label }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if question_count %}
+  <div class="toc">
+    <h3>Contents</h3>
+    <ol>
+      {% for tab_id, tab in tabs %}{% for item in tab.qa %}
+      <li>{% if item.n %}<b>{{ item.n }}</b> &mdash; {% endif %}{{ item.q }}</li>
+      {% endfor %}{% endfor %}
+    </ol>
+  </div>
+  {% endif %}
+
+  {% for tab_id, tab in tabs %}
+  <section id="{{ tab_id }}">
+    <h2 class="section">{{ tab.name }}</h2>
+    <div class="rule"></div>
+    {% if tab.intro %}<p class="intro">{{ tab.intro }}</p>{% endif %}
+
+    {% if tab.qa %}
+      {% for item in tab.qa %}
+      <div class="qa">
+        {% if item.n %}<span class="n">{{ item.n }}</span>{% endif %}
+        <div class="q">{{ item.q }}</div>
+        <div class="a">{% for para in item.a.split('\n\n') %}<p>{{ para }}</p>{% endfor %}</div>
+      </div>
+      {% endfor %}
+    {% endif %}
+
+    {% if tab.bullets %}
+    <ul class="bullets">{% for bullet in tab.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>
+    {% endif %}
+
+    {% if tab.table and tab.table.rows %}
+    <table>
+      {% if tab.table.headers %}
+      <thead><tr>{% for header in tab.table.headers %}<th>{{ header }}</th>{% endfor %}</tr></thead>
+      {% endif %}
+      <tbody>{% for row in tab.table.rows %}<tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+
+    {% if tab.callout and (tab.callout.title or tab.callout.body) %}
+    <div class="callout">
+      {% if tab.callout.title %}<div class="t">{{ tab.callout.title }}</div>{% endif %}
+      {% if tab.callout.body %}<div class="b">{{ tab.callout.body }}</div>{% endif %}
+    </div>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
+
+<div class="foot">
+  <span>{{ footer }}</span>
+  <span class="tag">{{ brand.tagline }}</span>
+</div>
+</body>
+</html>

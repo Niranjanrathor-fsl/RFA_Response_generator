@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ doc.title }} | Firstsource</title>
+<style>
+{% include "_brand.css.j2" %}
+.tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:22px;border-bottom:2px solid var(--fs-gray);padding-bottom:12px;}
+.tabs button{border:1.5px solid var(--fs-light);background:#fff;color:var(--fs-dark);border-radius:9px;
+  padding:10px 16px;font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer;
+  display:inline-flex;align-items:center;gap:8px;transition:.15s;}
+.tabs button svg{width:16px;height:16px;}
+.tabs button:hover{border-color:var(--fs-bright);}
+.tabs button.active{background:var(--fs-dark);color:#fff;border-color:var(--fs-dark);}
+.panel{display:none;}
+.panel.active{display:block;}
+</style>
+</head>
+<body>
+<div class="head">
+  <div>
+    <h1>{{ doc.title }}</h1>
+    {% if doc.subtitle %}<p>{{ doc.subtitle }}</p>{% endif %}
+  </div>
+  <img src="{{ logo_white }}" alt="Firstsource">
+</div>
+
+<div class="wrap">
+  {% if doc.metrics %}
+  <div class="metrics">
+    {% for metric in doc.metrics %}
+    <div class="metric{% if metric.accent %} accent{% endif %}">
+      {% if metric.icon %}{{ metric.icon | icon | safe }}{% endif %}
+      <div class="v">{{ metric.value }}</div>
+      <div class="l">{{ metric.label }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="tabs" role="tablist">
+    {% for tab_id, tab in tabs %}
+    <button role="tab" data-target="{{ tab_id }}"
+            aria-controls="{{ tab_id }}"
+            aria-selected="{{ 'true' if loop.first else 'false' }}"
+            class="{% if loop.first %}active{% endif %}">
+      {{ (tab.icon or 'doc') | icon | safe }}<span>{{ tab.name }}</span>
+    </button>
+    {% endfor %}
+  </div>
+
+  {% for tab_id, tab in tabs %}
+  <section class="panel{% if loop.first %} active{% endif %}" id="{{ tab_id }}" role="tabpanel">
+    <h2 class="section">{{ tab.name }}</h2>
+    <div class="rule"></div>
+    {% if tab.intro %}<p class="intro">{{ tab.intro }}</p>{% endif %}
+
+    {% if tab.bullets %}
+    <ul class="bullets">
+      {% for bullet in tab.bullets %}<li>{{ bullet }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if tab.qa %}
+      {% for item in tab.qa %}
+      <div class="qa">
+        {% if item.n %}<span class="n">{{ item.n }}</span>{% endif %}
+        <div class="q">{{ item.q }}</div>
+        <div class="a">{% for para in item.a.split('\n\n') %}<p>{{ para }}</p>{% endfor %}</div>
+      </div>
+      {% endfor %}
+    {% endif %}
+
+    {% if tab.table and tab.table.rows %}
+    <table>
+      {% if tab.table.headers %}
+      <thead><tr>{% for header in tab.table.headers %}<th>{{ header }}</th>{% endfor %}</tr></thead>
+      {% endif %}
+      <tbody>
+        {% for row in tab.table.rows %}
+        <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% if tab.callout and (tab.callout.title or tab.callout.body) %}
+    <div class="callout">
+      {% if tab.callout.title %}<div class="t">{{ tab.callout.title }}</div>{% endif %}
+      {% if tab.callout.body %}<div class="b">{{ tab.callout.body }}</div>{% endif %}
+    </div>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
+
+<div class="foot">
+  <span>{{ footer }}</span>
+  <span class="tag">{{ brand.tagline }}</span>
+</div>
+
+<script>
+(function(){
+  var buttons = Array.prototype.slice.call(document.querySelectorAll('.tabs button'));
+  buttons.forEach(function(button){
+    button.addEventListener('click', function(){
+      buttons.forEach(function(other){
+        other.classList.remove('active');
+        other.setAttribute('aria-selected', 'false');
+      });
+      Array.prototype.forEach.call(document.querySelectorAll('.panel'), function(panel){
+        panel.classList.remove('active');
+      });
+      button.classList.add('active');
+      button.setAttribute('aria-selected', 'true');
+      var target = document.getElementById(button.dataset.target);
+      if (target) { target.classList.add('active'); }
+      window.scrollTo(0, 0);
+    });
+  });
+})();
+</script>
+</body>
+</html>

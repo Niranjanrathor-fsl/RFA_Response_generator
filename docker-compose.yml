@@ -1,0 +1,35 @@
+# Local and small-server deployment.
+#
+#   docker compose up --build          start
+#   docker compose logs -f app         follow logs
+#   docker compose down                stop
+#
+# For a public deployment, put a TLS terminator (nginx, Traefik, Caddy or your
+# corporate load balancer) in front of this and see README > "Moving to your
+# own server".
+
+services:
+  app:
+    build: .
+    image: firstsource-rfp-generator:1.0.0
+    container_name: firstsource-rfp-generator
+    restart: unless-stopped
+    ports:
+      # host:container - change the host port if 8000 is taken.
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Anything set here overrides .env - handy for per-host differences.
+      HOST: 0.0.0.0
+      PORT: "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # The app is stateless - no volumes needed. Mount the knowledge base
+    # read-only if you want to update it without rebuilding the image:
+    # volumes:
+    #   - ./knowledge:/app/knowledge:ro

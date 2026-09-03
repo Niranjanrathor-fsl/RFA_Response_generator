@@ -1,0 +1,97 @@
+<mxfile host="app.diagrams.net" version="24.0.0">
+  <diagram name="RAG Pipeline (Budget)" id="rag-budget-pipeline">
+    <mxGraphModel dx="1050" dy="720" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="900" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ================= TITLE ================= -->
+        <mxCell id="title" value="Firstsource RFP Generator — Budget RAG Pipeline (SharePoint grounding)" style="text;html=1;fontSize=16;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="10" width="820" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- ================= INGESTION LANE ================= -->
+        <mxCell id="ing_lane" value="INGESTION PIPELINE  —  runs on a schedule (e.g. hourly / nightly), offline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="60" width="380" height="640" as="geometry" />
+        </mxCell>
+
+        <mxCell id="I1" value="1. SharePoint library&#10;Analyst docs: PDF · Word · PPT · Excel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="70" y="100" width="320" height="54" as="geometry" />
+        </mxCell>
+        <mxCell id="I2" value="2. Microsoft Graph API&#10;Pull new/changed files (Entra app, read-only)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="70" y="184" width="320" height="54" as="geometry" />
+        </mxCell>
+        <mxCell id="I3" value="3. Extract text + tables&#10;pypdf · python-docx · python-pptx · openpyxl&#10;(reuses your extract.py)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="70" y="268" width="320" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="I4" value="4. Chunking&#10;Document-structure-aware + recursive split&#10;~512 tokens, ~15% overlap · keep tables intact" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="70" y="362" width="320" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="I5" value="5. Contextual enrichment (optional, recommended)&#10;gpt-5.4 prepends a 1-line context to each chunk&#10;↳ cuts retrieval misses ~35–49% (Anthropic)" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="70" y="456" width="320" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="I6" value="6. Build two representations per chunk&#10;• Dense vector → Azure OpenAI text-embedding-3-small&#10;• Sparse vector → BM25 (exact keyword match)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="70" y="550" width="320" height="64" as="geometry" />
+        </mxCell>
+
+        <!-- ================= QUERY LANE ================= -->
+        <mxCell id="qry_lane" value="QUERY PIPELINE  —  runs per user request, online" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="480" y="60" width="380" height="640" as="geometry" />
+        </mxCell>
+
+        <mxCell id="Q1" value="1. User request&#10;Upload RFI / paste questions (existing web app)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="510" y="100" width="320" height="54" as="geometry" />
+        </mxCell>
+        <mxCell id="Q2" value="2. Embed the query&#10;Azure OpenAI text-embedding-3-small (+ BM25 terms)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="510" y="184" width="320" height="54" as="geometry" />
+        </mxCell>
+        <mxCell id="Q3" value="3. Hybrid search in Qdrant&#10;Dense + sparse, fused with RRF → top ~100 candidates" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="510" y="268" width="320" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="Q4" value="4. Rerank&#10;Cross-encoder (bge-reranker-v2-m3, open-source, free)&#10;→ keep the top ~15 most relevant chunks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="510" y="362" width="320" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="Q5" value="5. Assemble prompt&#10;Questions + reranked chunks (with citations)&#10;+ existing brand / Kairos knowledge base" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="510" y="456" width="320" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="Q6" value="6. Generate — Azure OpenAI gpt-5.4&#10;Grounded answer + source citations (your llm.py)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="510" y="550" width="320" height="64" as="geometry" />
+        </mxCell>
+
+        <!-- ================= SHARED STORES / OUTPUT ================= -->
+        <mxCell id="qdrant" value="QDRANT — vector database (budget choice)&#10;Stores dense + sparse vectors + metadata (source, page, date)&#10;Self-host in a container (free) OR Qdrant Cloud free tier (1GB)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="120" y="730" width="360" height="120" as="geometry" />
+        </mxCell>
+
+        <mxCell id="outputs" value="DELIVERABLES (existing generators)&#10;Dashboard · Q&amp;A doc · Word · PowerPoint · Excel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="560" y="760" width="300" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- ================= INGESTION EDGES ================= -->
+        <mxCell id="eI1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#82b366;" edge="1" parent="1" source="I1" target="I2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eI2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#82b366;" edge="1" parent="1" source="I2" target="I3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eI3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#82b366;" edge="1" parent="1" source="I3" target="I4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eI4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#82b366;" edge="1" parent="1" source="I4" target="I5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eI5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#82b366;" edge="1" parent="1" source="I5" target="I6"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eI6" value="upsert vectors" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#d79b00;fontStyle=2;" edge="1" parent="1" source="I6" target="qdrant"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- ================= QUERY EDGES ================= -->
+        <mxCell id="eQ1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="Q1" target="Q2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eQ2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="Q2" target="Q3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eQ3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="Q3" target="Q4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eQ4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="Q4" target="Q5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eQ5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="Q5" target="Q6"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- ================= CROSS EDGES ================= -->
+        <mxCell id="eRetrieve" value="retrieve (hybrid)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;dashed=1;strokeColor=#d79b00;fontStyle=2;exitX=1;exitY=0.25;entryX=0;entryY=0.5;" edge="1" parent="1" source="qdrant" target="Q3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eOut" value="render" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#9673a6;fontStyle=2;" edge="1" parent="1" source="Q6" target="outputs"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- ================= LEGEND ================= -->
+        <mxCell id="legend" value="Stack (all free except Azure OpenAI usage you already pay):&#10;• Vector DB: Qdrant (OSS / free tier) — hybrid search + metadata filter + rerank&#10;• Embeddings: Azure OpenAI text-embedding-3-small (very cheap)&#10;• Reranker: bge-reranker-v2-m3 (open-source, runs in-app)&#10;• Chunking: structure-aware + recursive, tables kept intact&#10;• Generation: Azure OpenAI gpt-5.4 (existing)" style="text;html=1;align=left;verticalAlign=top;spacingLeft=6;fillColor=#fffde7;strokeColor=#d6b656;rounded=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="120" y="860" width="740" height="30" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
