@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -578,6 +579,14 @@ def reset_sync_state(source_key: str, settings: Settings | None = None) -> None:
 # Arbitrary but stable key; shared by every instance so only one syncs at a time.
 _SYNC_ADVISORY_LOCK_KEY = 728411
 
+# An advisory lock lives as long as its SESSION, and sync_once holds it for hours
+# while never querying on that connection again. Observed live: the idle session
+# was dropped mid-ingest and pg_locks showed zero holders while the ingest was
+# still running - nothing would have stopped a second sync starting. TCP
+# keepalives were not enough; this issues a real query so the session is never
+# idle in the first place.
+_LOCK_HEARTBEAT_SECONDS = 60.0
+
 
 @contextmanager
 def advisory_lock(
@@ -614,9 +623,9 @@ def advisory_lock(
             # "Another instance is already syncing". Keepalives cut that to about
             # two minutes (30s idle, then 3 probes 10s apart).
             keepalives=1,
-            keepalives_idle=30,
-            keepalives_interval=10,
-            keepalives_count=3,
+            keepalives_idle=60,
+            keepalives_interval=15,
+            keepalives_count=5,
         )
         conn.autocommit = True
         with conn.cursor() as cur:
@@ -626,9 +635,29 @@ def advisory_lock(
         log.warning("Could not obtain the sync advisory lock: %s", exc)
         acquired = False
 
+    stop_heartbeat = threading.Event()
+    heartbeat: Optional[threading.Thread] = None
+    if acquired and conn is not None:
+        def _heartbeat() -> None:
+            while not stop_heartbeat.wait(_LOCK_HEARTBEAT_SECONDS):
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1")
+                except Exception as exc:  # noqa: BLE001 - the run continues regardless
+                    log.warning("Sync lock heartbeat failed; the lock may be lost: %s", exc)
+                    return
+
+        heartbeat = threading.Thread(
+            target=_heartbeat, name="sync-lock-heartbeat", daemon=True
+        )
+        heartbeat.start()
+
     try:
         yield acquired
     finally:
+        stop_heartbeat.set()
+        if heartbeat is not None:
+            heartbeat.join(timeout=5)
         if conn is not None:
             try:
                 if acquired:

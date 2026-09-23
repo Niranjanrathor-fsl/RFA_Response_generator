@@ -100,8 +100,10 @@ def test_advisory_lock_does_not_swallow_errors_from_its_body(monkeypatch):
 def test_advisory_lock_connection_enables_tcp_keepalives(monkeypatch):
     """A killed ingest leaves its Postgres backend idle and STILL HOLDING the
     lock until TCP reaps it - observed live at 1h35m, during which every
-    scheduled sync silently no-ops. Keepalives let Postgres notice the dead
-    client in about two minutes instead.
+    scheduled sync silently no-ops. Keepalives let Postgres notice a genuinely
+    dead client, while staying slack enough not to tear down a healthy but idle
+    connection (the first attempt at 30s/10s/3 was too aggressive and the lock
+    was lost mid-ingest). The heartbeat below is what actually keeps it alive.
     """
     captured = {}
 
@@ -138,6 +140,52 @@ def test_advisory_lock_connection_enables_tcp_keepalives(monkeypatch):
         pass
 
     assert captured.get("keepalives") == 1
-    assert captured.get("keepalives_idle") == 30
-    assert captured.get("keepalives_interval") == 10
-    assert captured.get("keepalives_count") == 3
+    assert captured.get("keepalives_idle") == 60
+    assert captured.get("keepalives_interval") == 15
+    assert captured.get("keepalives_count") == 5
+
+
+def test_advisory_lock_heartbeats_so_the_session_is_never_idle(monkeypatch):
+    """Keepalives alone were not enough. Observed live: during a multi-hour
+    ingest the lock connection sat idle and was dropped, so pg_locks showed ZERO
+    holders while the ingest was still running - leaving nothing to stop a second
+    sync starting. A periodic query keeps the session genuinely active.
+    """
+    import threading
+
+    queries = []
+    seen_during_body = threading.Event()
+
+    class _Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, *a):
+            queries.append(sql)
+            if "SELECT 1" in sql:
+                seen_during_body.set()
+
+        def fetchone(self):
+            return (True,)
+
+    class _Conn:
+        autocommit = False
+
+        def cursor(self):
+            return _Cursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("psycopg2.connect", lambda **kw: _Conn())
+    monkeypatch.setattr(store, "_LOCK_HEARTBEAT_SECONDS", 0.05)
+    settings = get_settings().model_copy(update={"pg_enabled": True})
+
+    with store.advisory_lock(settings) as acquired:
+        assert acquired is True
+        assert seen_during_body.wait(timeout=5), "no heartbeat query ran while the lock was held"
+
+    assert any("SELECT 1" in q for q in queries)
