@@ -598,6 +598,10 @@ def advisory_lock(
 
     conn = None
     acquired = False
+    # Acquisition is guarded; the yield deliberately is NOT. A yield inside this
+    # try would let contextmanager throw the caller's own exception in here, where
+    # the except below would mislabel it as a lock failure and the second yield
+    # would raise "generator didn't stop after throw()", destroying the traceback.
     try:
         conn = psycopg2.connect(
             host=settings.pg_host, port=settings.pg_port, dbname=settings.pg_dbname,
@@ -608,10 +612,12 @@ def advisory_lock(
         with conn.cursor() as cur:
             cur.execute("SELECT pg_try_advisory_lock(%s)", (key,))
             acquired = bool(cur.fetchone()[0])
-        yield acquired
     except Exception as exc:  # noqa: BLE001 - never break the caller over the lock
         log.warning("Could not obtain the sync advisory lock: %s", exc)
-        yield False
+        acquired = False
+
+    try:
+        yield acquired
     finally:
         if conn is not None:
             try:

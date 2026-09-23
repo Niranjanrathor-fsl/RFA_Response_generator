@@ -4,10 +4,12 @@ One entry point, sync_once(), used by both the manual CLI and the background
 scheduler. It is deliberately trigger-agnostic: if a Graph webhook receiver is
 added once the app is publicly hosted, it calls this same function.
 
-The freshness check IS the retry mechanism. A document that fails to ingest never
-records its content_tag, so the next run sees it as changed and retries it - no
-dead-letter queue, no retry table. attempt_count bounds that so one permanently
-broken file cannot retry forever.
+Retry model: a document that fails to ingest never records its content_tag, so it
+still looks changed. That alone is not enough for a DELTA source - advancing the
+delta link would drop the failed item out of every future incremental window - so
+the delta link is also held back while any failure is still retryable. Once a
+document exhausts RAG_SYNC_MAX_ATTEMPTS it stops holding the link, which is what
+keeps the sync from wedging on one permanently broken file.
 """
 
 from __future__ import annotations
@@ -80,6 +82,7 @@ def sync_once(
         store.ensure_schema(settings)
         source_key = settings.rag_source
         run_id = store.start_ingestion_run(settings, trigger=trigger)
+        source = None
 
         try:
             delta_link = None if full else store.get_sync_state(source_key, settings)
@@ -88,6 +91,10 @@ def sync_once(
 
             source = get_document_source(settings)
             batch = source.fetch_changes(delta_link)
+            if batch.resynced:
+                log.warning(
+                    "The delta token was rejected; this run is a full re-enumeration."
+                )
 
             client = index.get_client(settings)
             collection = settings.qdrant_collection_v2
@@ -102,6 +109,7 @@ def sync_once(
 
             states = store.get_document_states(settings)
             hash_owners = store.get_content_hash_owners(settings)
+            retryable_failures = 0
 
             for document in batch.documents:
                 if not _needs_ingestion(document, states.get(document.item_id), settings):
@@ -129,6 +137,10 @@ def sync_once(
                         f"{type(exc).__name__}: {exc}", settings,
                     )
                     report.documents_failed += 1
+                    previous = states.get(document.item_id)
+                    attempts = (previous.attempt_count if previous else 0) + 1
+                    if attempts < settings.rag_sync_max_attempts:
+                        retryable_failures += 1
                     continue
 
                 if written == 0:
@@ -140,13 +152,23 @@ def sync_once(
                     if document.content_hash:
                         hash_owners.setdefault(document.content_hash, document.item_id)
 
-            if batch.delta_link:
+            if retryable_failures:
+                # Holding the link back keeps the failed items inside the next
+                # incremental window. Advancing past them would mean nothing
+                # revisits them until the next full reconcile.
+                log.warning(
+                    "Not advancing the delta link: %d document(s) failed and are still retryable.",
+                    retryable_failures,
+                )
+            elif batch.delta_link:
                 store.save_sync_state(source_key, batch.delta_link, full, settings)
 
         except Exception as exc:  # noqa: BLE001 - a sync failure must never reach the app
             report.error = f"{type(exc).__name__}: {exc}"
             log.warning("Sync run failed: %s", report.error)
         finally:
+            if source is not None:
+                source.close()  # release the Graph HTTP connection pool
             store.finish_ingestion_run(
                 run_id, report.documents_indexed, report.chunks_indexed, report.error, settings
             )

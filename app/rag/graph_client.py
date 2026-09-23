@@ -37,6 +37,19 @@ class GraphError(RuntimeError):
     """Microsoft Graph could not be reached, authenticated to, or satisfied."""
 
 
+class DeltaTokenExpired(GraphError):
+    """Graph returned 410 Gone: the delta token is no longer usable.
+
+    SharePoint invalidates tokens routinely (tenant-side moves/restores, or simple
+    age). Carries the Location header Graph supplies, which is a fresh enumeration
+    URL to restart from.
+    """
+
+    def __init__(self, restart_url: str = "") -> None:
+        super().__init__("The delta token has expired; a full re-enumeration is required.")
+        self.restart_url = restart_url
+
+
 def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
     """Honour the server's Retry-After when present; otherwise back off exponentially."""
     raw = response.headers.get("Retry-After")
@@ -122,6 +135,10 @@ class GraphClient:
 
     def get_json(self, url: str, *, params: Optional[dict] = None) -> dict:
         response = self._request("GET", url, params=params)
+        if response.status_code == 410:
+            # Delta token expired. Surfaced as its own type so the caller can
+            # restart enumeration instead of stalling on a dead token forever.
+            raise DeltaTokenExpired(response.headers.get("Location", ""))
         if response.status_code >= 400:
             raise GraphError(f"Graph GET {url} returned {response.status_code}: {response.text[:400]}")
         return response.json()
@@ -164,6 +181,14 @@ class GraphClient:
         if response.status_code >= 400:
             raise GraphError(f"Content download for item {item_id} returned {response.status_code}.")
         return response.content
+
+    def close(self) -> None:
+        """Release the connection pool. A fresh client per sync, never closed,
+        accumulates sockets in a process meant to run for weeks."""
+        try:
+            self._http.close()
+        except Exception as exc:  # noqa: BLE001 - closing must never break a run
+            log.warning("Could not close the Graph HTTP client: %s", exc)
 
     # -------------------------------------------------------------- resolve
     def resolve_site_id(self) -> str:

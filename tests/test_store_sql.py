@@ -53,3 +53,45 @@ def test_advisory_lock_grants_without_postgres():
     """No Postgres means a single local process; it must not block itself."""
     with store.advisory_lock(get_settings()) as acquired:
         assert acquired is True
+
+
+def test_advisory_lock_does_not_swallow_errors_from_its_body(monkeypatch):
+    """The yield must sit OUTSIDE the try that handles lock acquisition, or a
+    failure inside the `with` block is caught by that except, reported as a bogus
+    lock error, and turned into RuntimeError('generator didn't stop after
+    throw()') - destroying the original traceback.
+
+    Needs PG_ENABLED=true to reach that code path at all; the disabled path
+    returns before the try.
+    """
+    import pytest
+
+    class _Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, *a):
+            pass
+
+        def fetchone(self):
+            return (True,)  # lock acquired
+
+    class _Conn:
+        autocommit = False
+
+        def cursor(self):
+            return _Cursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("psycopg2.connect", lambda **kw: _Conn())
+    settings = get_settings().model_copy(update={"pg_enabled": True})
+
+    with pytest.raises(ValueError, match="failure inside the body"):
+        with store.advisory_lock(settings) as acquired:
+            assert acquired is True
+            raise ValueError("failure inside the body")

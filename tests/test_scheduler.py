@@ -73,3 +73,31 @@ def test_a_failing_sync_does_not_stop_the_loop(monkeypatch):
     monkeypatch.setattr(scheduler_module, "sync_once", explode)
     scheduler_module.run_ticks(_settings(), ticks=3, clock=_clock())
     assert len(calls) == 3
+
+
+def test_a_failed_reconcile_is_not_recorded_as_a_successful_one(monkeypatch):
+    """sync_once never raises - it returns a report carrying .error. A reconcile
+    that failed must not advance last_full, or the next 24h are incremental-only
+    while the logs claim the scheduler is healthy."""
+    from app.rag.sync import SyncReport
+
+    calls = []
+
+    def failing(settings, full=False, trigger="scheduled"):
+        calls.append((full, trigger))
+        return SyncReport(error="GraphError: unreachable")
+
+    monkeypatch.setattr(scheduler_module, "sync_once", failing)
+    scheduler_module.run_ticks(_settings(), ticks=2, clock=_clock())
+    # Tick 0 reconcile failed, so tick 1 must retry the reconcile, not go incremental.
+    assert calls == [(True, "reconcile"), (True, "reconcile")]
+
+
+def test_scheduler_refuses_sharepoint_sync_without_postgres(caplog):
+    """Without Postgres there is no delta link and no content tags, so every tick
+    re-downloads and re-embeds the entire corpus - an unbounded Azure OpenAI bill
+    from one misconfigured variable."""
+    scheduler_module.start(
+        _settings(rag_source="sharepoint", pg_enabled=False)
+    )
+    assert scheduler_module._task is None

@@ -27,8 +27,8 @@ from pathlib import Path
 from typing import Callable, List, Optional, Protocol, Tuple
 
 from ..config import Settings, get_settings
-from ..document_sections import REJECTED_EXTENSIONS
-from .graph_client import GRAPH_BASE, GraphClient
+from ..document_sections import REJECTED_EXTENSIONS, UNREADABLE_LEGACY_EXTENSIONS
+from .graph_client import GRAPH_BASE, DeltaTokenExpired, GraphClient
 
 log = logging.getLogger(__name__)
 
@@ -62,14 +62,23 @@ class SourceBatch:
     documents: List[SourceDocument]
     deletions: List[SourceDeletion]
     delta_link: str
+    # True when the previous delta token was rejected and this batch is a fresh
+    # full enumeration. The caller must not trust its own prior state as complete.
+    resynced: bool = False
 
 
 class DocumentSource(Protocol):
     def fetch_changes(self, delta_link: Optional[str]) -> SourceBatch: ...
+    def close(self) -> None: ...
 
 
 def _is_rejected(name: str) -> bool:
-    return Path(name).suffix.lower() in REJECTED_EXTENSIONS
+    """Not worth downloading: no text is recoverable from it either way.
+
+    Includes the legacy .doc/.ppt binaries - there is no reliable pure-Python
+    reader, so fetching a 20 MB .ppt to extract nothing is pure waste.
+    """
+    return Path(name).suffix.lower() in (REJECTED_EXTENSIONS | UNREADABLE_LEGACY_EXTENSIONS)
 
 
 # ------------------------------------------------------------------- local
@@ -79,6 +88,9 @@ class LocalFolderSource:
 
     def __init__(self, directory: Path) -> None:
         self.directory = directory
+
+    def close(self) -> None:
+        """Nothing to release; present so both sources share one interface."""
 
     def fetch_changes(self, delta_link: Optional[str]) -> SourceBatch:
         documents: List[SourceDocument] = []
@@ -117,32 +129,50 @@ class SharePointSource:
     def __init__(self, settings: Settings, graph: Optional[GraphClient] = None) -> None:
         self.settings = settings
         self.graph = graph or GraphClient(settings)
-        self._resolved: Optional[Tuple[str, str, str]] = None
+        self._resolved: Optional[Tuple[str, str, str, str]] = None
 
-    def _resolve(self) -> Tuple[str, str, str]:
+    def close(self) -> None:
+        self.graph.close()
+
+    def _resolve(self) -> Tuple[str, str, str, str]:
+        """(site_id, drive_id, folder_item_id, root_path).
+
+        root_path is the configured folder's own Graph path, captured here so
+        folder derivation can strip an exact prefix instead of searching for the
+        folder's leaf name - which breaks when an ANCESTOR shares that name, and
+        degenerates entirely when SHAREPOINT_FOLDER is empty (the drive root).
+        """
         if self._resolved is None:
             site_id = self.graph.resolve_site_id()
             drive_id = self.graph.resolve_drive_id(site_id)
             folder = self.graph.resolve_folder_item(drive_id, self.settings.sharepoint_folder)
-            self._resolved = (site_id, drive_id, folder["id"])
-            log.info("Resolved SharePoint folder '%s' to item %s.",
-                     self.settings.sharepoint_folder, folder["id"])
+            parent_path = (folder.get("parentReference") or {}).get("path") or ""
+            root_path = f"{parent_path}/{folder['name']}" if parent_path else ""
+            self._resolved = (site_id, drive_id, folder["id"], root_path)
+            log.info("Resolved SharePoint folder '%s' to item %s (path %s).",
+                     self.settings.sharepoint_folder, folder["id"], root_path or "(drive root)")
         return self._resolved
 
-    def _relative_folder_path(self, item: dict) -> str:
+    def _relative_folder_path(self, item: dict, root_path: str) -> str:
         """Path under the configured root, for display. parentReference.path may be
-        absent (the API reference warns of this), so this must never be load-bearing."""
+        absent (the API reference warns of this), so this must never be load-bearing.
+
+        Anchored on the root's exact path rather than a search for its leaf name:
+        an ancestor sharing that name would otherwise leak extra segments into
+        every folder_path, and an empty SHAREPOINT_FOLDER would emit the raw
+        internal Graph path.
+        """
         raw = (item.get("parentReference") or {}).get("path") or ""
         if not raw:
             return ""
-        root_leaf = self.settings.sharepoint_folder.strip("/").rsplit("/", 1)[-1]
-        marker = f"/{root_leaf}"
-        index = raw.find(marker)
-        if index < 0:
-            return ""
-        return raw[index + len(marker):].strip("/")
+        if root_path and raw.startswith(root_path):
+            return raw[len(root_path):].strip("/")
+        # Drive root configured, or an unexpected shape: fall back to the path
+        # below Graph's "root:" marker rather than exposing the internal prefix.
+        _, _, below_root = raw.partition("root:")
+        return below_root.strip("/")
 
-    def _to_document(self, item: dict, drive_id: str) -> Optional[SourceDocument]:
+    def _to_document(self, item: dict, drive_id: str, root_path: str) -> Optional[SourceDocument]:
         name = item.get("name", "")
         if _is_rejected(name):
             log.info("Skipping %s: rejected binary format.", name)
@@ -173,8 +203,12 @@ class SharePointSource:
         return SourceDocument(
             item_id=item_id,
             name=name,
-            folder_path=self._relative_folder_path(item),
-            content_tag=item.get("cTag", "") or item.get("eTag", ""),
+            folder_path=self._relative_folder_path(item, root_path),
+            # Fall back to the modified timestamp: an empty tag reads as "never
+            # ingested" downstream, which would re-embed this document every sync.
+            content_tag=(
+                item.get("cTag", "") or item.get("eTag", "") or modified_at.isoformat()
+            ),
             content_hash=hashes.get("quickXorHash", "") or hashes.get("sha256Hash", ""),
             modified_at=modified_at,
             web_url=item.get("webUrl", ""),
@@ -183,9 +217,22 @@ class SharePointSource:
         )
 
     def fetch_changes(self, delta_link: Optional[str]) -> SourceBatch:
-        _, drive_id, folder_id = self._resolve()
-        url = delta_link or f"{GRAPH_BASE}/drives/{drive_id}/items/{folder_id}/delta"
+        _, drive_id, folder_id, root_path = self._resolve()
+        base_url = f"{GRAPH_BASE}/drives/{drive_id}/items/{folder_id}/delta"
+        url = delta_link or base_url
 
+        try:
+            return self._enumerate(url, drive_id, root_path, resynced=False)
+        except DeltaTokenExpired as exc:
+            # Routine on SharePoint. Without this the same dead token is replayed
+            # every 15 minutes and the index silently stops updating for good.
+            restart_url = exc.restart_url or base_url
+            log.warning("Delta token expired; restarting a full enumeration from %s.", restart_url)
+            return self._enumerate(restart_url, drive_id, root_path, resynced=True)
+
+    def _enumerate(
+        self, url: str, drive_id: str, root_path: str, *, resynced: bool
+    ) -> SourceBatch:
         documents: List[SourceDocument] = []
         deletions: List[SourceDeletion] = []
         next_delta_link = ""
@@ -199,13 +246,13 @@ class SharePointSource:
                     continue
                 if "folder" in item:
                     continue  # containers carry no content of their own
-                document = self._to_document(item, drive_id)
+                document = self._to_document(item, drive_id, root_path)
                 if document is not None:
                     documents.append(document)
             next_delta_link = page.get("@odata.deltaLink", next_delta_link)
 
         log.info("Delta returned %d document(s) and %d deletion(s).", len(documents), len(deletions))
-        return SourceBatch(documents, deletions, next_delta_link)
+        return SourceBatch(documents, deletions, next_delta_link, resynced=resynced)
 
 
 def get_document_source(settings: Settings | None = None) -> DocumentSource:

@@ -33,6 +33,12 @@ os.environ["PG_ENABLED"] = "false"
 os.environ["RAG_VISION_ENABLED"] = "false"
 os.environ["RAG_CACHE_ENABLED"] = "false"
 os.environ["RAG_SYNC_ENABLED"] = "false"
+# Pinned for the same reason: the SharePoint folder path feeds folder-path
+# derivation, so leaving it to the developer's .env makes those tests pass or
+# fail depending on whose machine they run on.
+os.environ["SHAREPOINT_SITE_URL"] = "https://test.sharepoint.com/sites/Test"
+os.environ["SHAREPOINT_LIBRARY"] = "Documents"
+os.environ["SHAREPOINT_FOLDER"] = "Content/Analyst"
 
 from app.schemas import ResponseDocument  # noqa: E402
 
