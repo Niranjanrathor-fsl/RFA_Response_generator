@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     # Give up on a document after this many consecutive ingestion failures. It is
     # retried again only once its content changes.
     rag_sync_max_attempts: int = 3
+    # Stop a run after this many failures in a row. A run of consecutive failures
+    # means the infrastructure is down, not that the documents are bad - during a
+    # live ingest a DNS outage failed all 99 remaining documents inside one
+    # second, and with Postgres reachable each would have taken a retry strike.
+    rag_sync_abort_after_consecutive_failures: int = 5
     # SharePoint accumulates "file (1).pdf" copies. Index identical content once so
     # the retriever cannot see the same evidence twice and over-weight it.
     rag_skip_duplicate_content: bool = True
