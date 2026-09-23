@@ -451,21 +451,6 @@ def fetch_eval_result_metrics(
         return {}
 
 
-def get_document_hashes(settings: Settings | None = None) -> Dict[str, str]:
-    """Current {name: latest_hash} for every ingested document - used by the
-    semantic cache to detect when a source a cached answer relied on has changed."""
-    settings = settings or get_settings()
-    if not settings.pg_enabled:
-        return {}
-    try:
-        with _connection(settings) as conn, conn.cursor() as cur:
-            cur.execute("SELECT name, latest_hash FROM documents")
-            return dict(cur.fetchall())
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Could not fetch document hashes: %s", exc)
-        return {}
-
-
 def record_cache_write(
     cache_id: str, query_text: str, source_documents: Set[str], settings: Settings | None = None
 ) -> None:
