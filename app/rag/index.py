@@ -20,6 +20,7 @@ the full original chunk text, unchanged, in the payload):
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import List, Optional
@@ -46,6 +47,34 @@ DENSE_TABLE = "dense_table"
 SPARSE_BM25 = "sparse_bm25"
 
 _ID_NAMESPACE = uuid.UUID("6f6b3f9a-6e1f-4c9a-9b1a-9f6a2b6f3f1a")
+
+_WRITE_ATTEMPTS = 3
+_WRITE_BACKOFF_SECONDS = 1.0
+
+
+def _with_write_retry(operation, description: str):
+    """Retry a Qdrant WRITE through a transient failure.
+
+    retrieve.py already does this for queries, noting that the self-hosted Qdrant
+    VM drops connections under rapid back-to-back requests. Writes needed it more:
+    the upsert is the LAST step for a document, so a timeout there discards every
+    LLM and embedding call already paid for it - observed live as 1 failure in the
+    first 5 documents of a real ingestion run.
+
+    Re-raises after the final attempt so the caller records a real failure rather
+    than reporting success with nothing written.
+    """
+    for attempt in range(1, _WRITE_ATTEMPTS + 1):
+        try:
+            return operation()
+        except Exception as exc:  # noqa: BLE001 - retry transient network errors
+            if attempt == _WRITE_ATTEMPTS:
+                raise
+            log.warning(
+                "Qdrant %s failed (attempt %d/%d): %s: %s - retrying.",
+                description, attempt, _WRITE_ATTEMPTS, type(exc).__name__, exc,
+            )
+            time.sleep(_WRITE_BACKOFF_SECONDS * attempt)
 
 
 def get_client(settings: Settings | None = None) -> QdrantClient:
@@ -97,14 +126,15 @@ def delete_document(client: QdrantClient, collection: str, item_id: str) -> None
     re-indexing a changed document - without the latter, a document that shrinks
     from 40 chunks to 20 strands 20 orphans that keep surfacing in retrieval.
     """
+    selector = models.FilterSelector(
+        filter=models.Filter(
+            must=[models.FieldCondition(key="item_id", match=models.MatchValue(value=item_id))]
+        )
+    )
     try:
-        client.delete(
-            collection_name=collection,
-            points_selector=models.FilterSelector(
-                filter=models.Filter(
-                    must=[models.FieldCondition(key="item_id", match=models.MatchValue(value=item_id))]
-                )
-            ),
+        _with_write_retry(
+            lambda: client.delete(collection_name=collection, points_selector=selector),
+            f"delete of chunks for item {item_id}",
         )
     except Exception as exc:  # noqa: BLE001 - never abort a run over one deletion
         log.warning("Could not delete chunks for item %s: %s", item_id, exc)
@@ -188,6 +218,9 @@ def index_document(
                 },
             )
         )
-    client.upsert(collection_name=collection, points=points)
+    _with_write_retry(
+        lambda: client.upsert(collection_name=collection, points=points),
+        f"upsert of {len(points)} point(s) for {document.name}",
+    )
     return len(points)
 
