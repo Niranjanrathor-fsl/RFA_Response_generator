@@ -88,13 +88,13 @@ at current corpus size), but it scales linearly with corpus size and will become
 dominant cost/time factor on a large SharePoint library. Batching, or skipping the
 summary vector for very short chunks, is the obvious lever if it starts to hurt.
 
-### 3.5 No chunk deletion path
-Re-ingesting a document upserts by deterministic UUID5 (`source::chunk_index`). If a
-document shrinks from 40 chunks to 20, chunks 20-39 from the previous version stay in
-Qdrant forever as orphans. There is no delete-by-source, and no handling for a
-document removed from the source folder entirely.
-*(Being addressed as part of the SharePoint ingestion work — remove this entry once
-that lands.)*
+### 3.5 No chunk deletion path - RESOLVED 2026-09-23
+Closed by the SharePoint delta sync work. `index.delete_document()` removes every
+chunk for a source item by payload filter, and `sync.py` calls it both when a
+document is deleted at source and immediately before re-indexing a changed one -
+so a document that shrinks no longer strands orphan chunks. Identity also moved
+from filename to source item id, so same-named files in different folders no
+longer overwrite each other.
 
 ### 3.6 Everything is uncommitted
 As of this writing, all of Phases 1-4 sit uncommitted on

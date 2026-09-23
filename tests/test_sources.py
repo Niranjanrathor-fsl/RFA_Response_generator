@@ -43,6 +43,8 @@ def _source(pages) -> SharePointSource:
             return httpx.Response(200, json=pages[url])
         if url.startswith("https://signed.example/"):
             return httpx.Response(200, content=b"file-bytes")
+        if url.endswith("/content"):
+            return httpx.Response(200, content=b"content-endpoint-bytes")
         raise AssertionError(f"unexpected URL: {url}")
 
     graph = GraphClient(get_settings(), http=httpx.Client(transport=httpx.MockTransport(handler)))
@@ -89,8 +91,22 @@ def test_deleted_facet_wins_over_file_facet():
     assert [d.item_id for d in batch.deletions] == ["i9"]
 
 
-def test_file_without_download_url_is_skipped_not_crashed():
+def test_file_without_download_url_falls_back_to_the_content_endpoint():
+    """Delta responses do NOT include @microsoft.graph.downloadUrl - only the
+    /children collection does. Relying on it skipped every single file."""
     item = _item("weird.docx", "i5")
+    del item["@microsoft.graph.downloadUrl"]
+    batch = _source({
+        DELTA_URL: {"value": [item], "@odata.deltaLink": f"{GRAPH_BASE}/end"}
+    }).fetch_changes(None)
+    assert [d.name for d in batch.documents] == ["weird.docx"]
+    assert batch.documents[0].fetch() == b"content-endpoint-bytes"
+
+
+def test_item_that_is_neither_file_nor_folder_is_skipped():
+    """OneNote sections and shortcuts carry neither facet and have no content."""
+    item = _item("notebook", "i6")
+    del item["file"]
     del item["@microsoft.graph.downloadUrl"]
     batch = _source({
         DELTA_URL: {"value": [item], "@odata.deltaLink": f"{GRAPH_BASE}/end"}

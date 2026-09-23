@@ -22,6 +22,7 @@ knowledge base lives on the server where end users cannot see or edit it.
 - [Single sign-on](#single-sign-on)
 - [Moving to your own server](#moving-to-your-own-server)
 - [Updating the knowledge base](#updating-the-knowledge-base)
+- [SharePoint knowledge base](#sharepoint-knowledge-base)
 - [API reference](#api-reference)
 - [Tests](#tests)
 - [Operations and troubleshooting](#operations-and-troubleshooting)
@@ -382,6 +383,63 @@ If a file grows beyond `MAX_KNOWLEDGE_CHARS_PER_FILE` (default 60,000) it is
 truncated with a warning in the log — raise the limit rather than losing content.
 
 ---
+
+## SharePoint knowledge base
+
+The analyst knowledge base can be read directly from a SharePoint folder instead
+of a local directory. Everything under the configured folder is indexed, at any
+nesting depth, and the index keeps itself up to date.
+
+### How it stays fresh
+
+A single Microsoft Graph **delta query** does both jobs. The first call walks the
+entire nested folder tree and returns a `deltaLink`; that link is stored in
+Postgres. Every 15 minutes the app replays it and gets back only what changed —
+files added, edited or deleted. When nothing has changed, that is one cheap HTTP
+call and no further work.
+
+Costs are avoided aggressively: a document is only re-processed when its content
+actually changes (checked via SharePoint's `cTag`), so renaming a file or editing
+a metadata column is free. Identical copies — SharePoint's `file (1).pdf` habit —
+are indexed once.
+
+Documents are identified by their SharePoint item ID, never by filename, so two
+files with the same name in different subfolders do not collide, and renaming or
+moving a file does not orphan its chunks.
+
+### Configuration
+
+```
+RAG_SOURCE=sharepoint
+RAG_SYNC_ENABLED=true
+PG_ENABLED=true          # required: the delta link lives here
+```
+
+See `.env.example` for the full list and the SharePoint credentials.
+
+### Commands
+
+```bash
+python test.py --delta            # read-only: show exactly what would be indexed
+python -m app.rag.ingest          # incremental: only what changed
+python -m app.rag.ingest --full   # re-enumerate everything
+python -m app.rag.ingest --reset  # forget all state, then re-ingest everything
+```
+
+**Use `--reset` after wiping the Qdrant collection.** Without it, the stored
+content tags make the next sync conclude "nothing changed" and the collection
+stays empty.
+
+### Limits
+
+- Files are read wherever possible. Only audio, video, archives and executables
+  are skipped (`.mp4`, `.zip`, …), plus `.doc`/`.ppt`, which have no reliable
+  pure-Python reader — save those as `.docx`/`.pptx`.
+- Change notifications (webhooks) are not used. They need a publicly reachable
+  HTTPS endpoint; polling works from anywhere and is the safety net Microsoft
+  recommends regardless.
+- On Azure App Service, enable **Always On** or the app unloads when idle and
+  stops polling.
 
 ## API reference
 

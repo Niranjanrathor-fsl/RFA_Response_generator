@@ -142,17 +142,26 @@ class SharePointSource:
             return ""
         return raw[index + len(marker):].strip("/")
 
-    def _to_document(self, item: dict) -> Optional[SourceDocument]:
+    def _to_document(self, item: dict, drive_id: str) -> Optional[SourceDocument]:
         name = item.get("name", "")
         if _is_rejected(name):
             log.info("Skipping %s: rejected binary format.", name)
             return None
 
-        download_url = item.get("@microsoft.graph.downloadUrl")
-        if not download_url:
-            # OneNote sections, shortcuts and some special items have no content URL.
-            log.info("Skipping %s: no download URL on this driveItem.", name)
+        if "file" not in item:
+            # OneNote sections, shortcuts and bundles carry no downloadable content.
+            log.info("Skipping %s: driveItem has no file facet.", name)
             return None
+
+        # Delta responses do NOT include @microsoft.graph.downloadUrl (only the
+        # /children collection does), so the authenticated /content endpoint is the
+        # real path here; a pre-signed URL is just a fast path when one is offered.
+        download_url = item.get("@microsoft.graph.downloadUrl")
+        item_id = item["id"]
+        if download_url:
+            fetch = (lambda url=download_url: self.graph.download(url))
+        else:
+            fetch = (lambda i=item_id: self.graph.download_item(drive_id, i))
 
         hashes = (item.get("file") or {}).get("hashes") or {}
         modified_raw = item.get("lastModifiedDateTime", "")
@@ -162,7 +171,7 @@ class SharePointSource:
             modified_at = datetime.now(timezone.utc)
 
         return SourceDocument(
-            item_id=item["id"],
+            item_id=item_id,
             name=name,
             folder_path=self._relative_folder_path(item),
             content_tag=item.get("cTag", "") or item.get("eTag", ""),
@@ -170,7 +179,7 @@ class SharePointSource:
             modified_at=modified_at,
             web_url=item.get("webUrl", ""),
             size=int(item.get("size", 0) or 0),
-            fetch=(lambda url=download_url: self.graph.download(url)),
+            fetch=fetch,
         )
 
     def fetch_changes(self, delta_link: Optional[str]) -> SourceBatch:
@@ -190,7 +199,7 @@ class SharePointSource:
                     continue
                 if "folder" in item:
                     continue  # containers carry no content of their own
-                document = self._to_document(item)
+                document = self._to_document(item, drive_id)
                 if document is not None:
                     documents.append(document)
             next_delta_link = page.get("@odata.deltaLink", next_delta_link)
