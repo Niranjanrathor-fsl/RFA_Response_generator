@@ -95,3 +95,49 @@ def test_advisory_lock_does_not_swallow_errors_from_its_body(monkeypatch):
         with store.advisory_lock(settings) as acquired:
             assert acquired is True
             raise ValueError("failure inside the body")
+
+
+def test_advisory_lock_connection_enables_tcp_keepalives(monkeypatch):
+    """A killed ingest leaves its Postgres backend idle and STILL HOLDING the
+    lock until TCP reaps it - observed live at 1h35m, during which every
+    scheduled sync silently no-ops. Keepalives let Postgres notice the dead
+    client in about two minutes instead.
+    """
+    captured = {}
+
+    class _Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, *a):
+            pass
+
+        def fetchone(self):
+            return (True,)
+
+    class _Conn:
+        autocommit = False
+
+        def cursor(self):
+            return _Cursor()
+
+        def close(self):
+            pass
+
+    def _connect(**kwargs):
+        captured.update(kwargs)
+        return _Conn()
+
+    monkeypatch.setattr("psycopg2.connect", _connect)
+    settings = get_settings().model_copy(update={"pg_enabled": True})
+
+    with store.advisory_lock(settings):
+        pass
+
+    assert captured.get("keepalives") == 1
+    assert captured.get("keepalives_idle") == 30
+    assert captured.get("keepalives_interval") == 10
+    assert captured.get("keepalives_count") == 3
