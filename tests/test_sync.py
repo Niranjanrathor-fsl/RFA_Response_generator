@@ -36,9 +36,13 @@ def _doc(item_id="i1", name="a.docx", tag="ctag-1", content_hash="hash-1", paylo
 class _FakeSource:
     def __init__(self, batch):
         self.batch = batch
+        self.closed = False
 
     def fetch_changes(self, delta_link):
         return self.batch
+
+    def close(self):
+        self.closed = True
 
 
 @pytest.fixture
@@ -77,7 +81,9 @@ def harness(monkeypatch):
 
 def _run(monkeypatch, harness, batch, states=None, settings=None, **kwargs):
     monkeypatch.setattr(sync_module.store, "get_document_states", lambda s: states or {})
-    monkeypatch.setattr(sync_module, "get_document_source", lambda s: _FakeSource(batch))
+    source = _FakeSource(batch)
+    harness["source"] = source
+    monkeypatch.setattr(sync_module, "get_document_source", lambda s: source)
     return sync_module.sync_once(settings or _settings(), **kwargs)
 
 
@@ -204,3 +210,42 @@ def test_reset_flag_clears_state_before_a_full_run(monkeypatch):
 
     assert calls["reset"] == ["sharepoint"]
     assert calls["full"] == [True]  # --reset must imply a full re-enumeration
+
+
+def test_delta_link_is_held_back_while_a_failure_is_still_retryable(monkeypatch, harness):
+    """Advancing past a failed document would drop it out of every future
+    incremental window - nothing would revisit it until the next full reconcile."""
+    def explode(*a, **k):
+        raise RuntimeError("transient embedding 500")
+
+    monkeypatch.setattr(sync_module, "chunk_document", explode)
+    _run(monkeypatch, harness, SourceBatch([_doc()], [], "link-99"))
+    assert harness["saved_link"] == []
+
+
+def test_delta_link_advances_once_a_failure_is_no_longer_retryable(monkeypatch, harness):
+    """Otherwise one permanently broken file wedges the sync forever."""
+    def explode(*a, **k):
+        raise RuntimeError("permanently broken")
+
+    settings = _settings()
+    states = {
+        "i1": DocumentState(
+            "i1", "a.docx", "", "", "failed", settings.rag_sync_max_attempts - 1
+        )
+    }
+    monkeypatch.setattr(sync_module, "chunk_document", explode)
+    _run(monkeypatch, harness, SourceBatch([_doc()], [], "link-99"), states, settings=settings)
+    assert harness["saved_link"] == [("link-99", False)]
+
+
+def test_the_source_is_closed_even_when_the_run_fails(monkeypatch, harness):
+    """A fresh httpx client per sync, never closed, leaks sockets in a process
+    meant to run for weeks."""
+    monkeypatch.setattr(sync_module.index, "get_client", _boom)
+    _run(monkeypatch, harness, SourceBatch([_doc()], [], "l"))
+    assert harness["source"].closed is True
+
+
+def _boom(*a, **k):
+    raise RuntimeError("qdrant unreachable")

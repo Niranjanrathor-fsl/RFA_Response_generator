@@ -10,7 +10,9 @@ from app.config import get_settings
 from app.rag.graph_client import GRAPH_BASE, GraphClient
 from app.rag.sources import LocalFolderSource, SharePointSource
 
-ROOT_PATH = "/drives/d1/root:/GenAI Content/relAI/relAI Latest Pitch Deck/Analyst"
+# Matches SHAREPOINT_FOLDER pinned in conftest ("Content/Analyst"), so folder-path
+# derivation is tested against a controlled input rather than whoever's .env.
+ROOT_PATH = "/drives/d1/root:/Content/Analyst"
 
 
 def _item(name, item_id, *, folder=False, deleted=False, path=ROOT_PATH, **extra):
@@ -52,7 +54,8 @@ def _source(pages) -> SharePointSource:
     graph._token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
 
     source = SharePointSource(get_settings(), graph=graph)
-    source._resolved = ("site1", "d1", "folder1")  # skip live resolution
+    # (site_id, drive_id, folder_item_id, root_path) - skip live resolution
+    source._resolved = ("site1", "d1", "folder1", ROOT_PATH)
     return source
 
 
@@ -184,3 +187,88 @@ def test_local_source_content_tag_changes_with_content(tmp_path):
     path.write_bytes(b"two")
     second = LocalFolderSource(tmp_path).fetch_changes(None).documents[0].content_tag
     assert first != second
+
+
+def test_delta_token_expiry_restarts_a_full_enumeration():
+    """SharePoint invalidates delta tokens routinely (410 Gone). Without recovery
+    every later sync replays the dead token and the index silently stops updating."""
+    stale = f"{GRAPH_BASE}/drives/d1/items/folder1/delta(token='dead')"
+    fresh = f"{GRAPH_BASE}/drives/d1/items/folder1/delta"
+
+    def handler(request):
+        url = str(request.url)
+        if url == stale:
+            return httpx.Response(
+                410,
+                headers={"Location": fresh},
+                json={"error": {"code": "resyncRequired", "message": "token expired"}},
+            )
+        if url == fresh:
+            return httpx.Response(
+                200,
+                json={"value": [_item("a.docx", "i1")], "@odata.deltaLink": f"{GRAPH_BASE}/new"},
+            )
+        raise AssertionError(f"unexpected URL: {url}")
+
+    graph = GraphClient(get_settings(), http=httpx.Client(transport=httpx.MockTransport(handler)))
+    graph._token = "fake"
+    graph._token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    source = SharePointSource(get_settings(), graph=graph)
+    source._resolved = ("site1", "d1", "folder1", ROOT_PATH)
+
+    batch = source.fetch_changes(stale)
+    assert [d.name for d in batch.documents] == ["a.docx"]
+    assert batch.delta_link == f"{GRAPH_BASE}/new"
+    assert batch.resynced is True
+
+
+def test_folder_path_is_empty_when_the_item_sits_in_the_configured_root():
+    batch = _source({
+        DELTA_URL: {"value": [_item("top.docx", "i1")], "@odata.deltaLink": "x"}
+    }).fetch_changes(None)
+    assert batch.documents[0].folder_path == ""
+
+
+def test_folder_path_is_not_confused_by_an_ancestor_sharing_the_root_name():
+    """Root 'Content/Analyst' under an ancestor also called 'Analyst'. Searching
+    for the leaf name would anchor on the ancestor and leak path segments."""
+    source = _source({
+        DELTA_URL: {
+            "value": [_item("x.docx", "i1", path="/drives/d1/root:/Analyst/Content/Analyst/Sub")],
+            "@odata.deltaLink": "x",
+        }
+    })
+    source._resolved = ("site1", "d1", "folder1", "/drives/d1/root:/Analyst/Content/Analyst")
+    batch = source.fetch_changes(None)
+    assert batch.documents[0].folder_path == "Sub"
+
+
+def test_legacy_doc_and_ppt_are_rejected_before_any_download():
+    """No pure-Python reader exists for these, so downloading a 20 MB .ppt only to
+    extract nothing is pure waste."""
+    batch = _source({
+        DELTA_URL: {
+            "value": [_item("old.doc", "i1"), _item("old.ppt", "i2"), _item("new.docx", "i3")],
+            "@odata.deltaLink": "x",
+        }
+    }).fetch_changes(None)
+    assert [d.name for d in batch.documents] == ["new.docx"]
+
+
+def test_item_without_a_change_tag_falls_back_to_the_modified_timestamp():
+    """An empty content_tag would be stored as '', which _needs_ingestion reads as
+    'never ingested' - re-embedding that document on every single sync forever."""
+    item = _item("a.docx", "i1")
+    del item["cTag"]
+    batch = _source({
+        DELTA_URL: {"value": [item], "@odata.deltaLink": "x"}
+    }).fetch_changes(None)
+    assert batch.documents[0].content_tag == "2026-04-13T06:55:23+00:00"
+
+
+def test_source_closes_its_graph_client():
+    """A fresh httpx.Client per sync, never closed, accumulates sockets in a
+    process meant to run for weeks."""
+    source = _source({DELTA_URL: {"value": [], "@odata.deltaLink": "x"}})
+    source.close()
+    assert source.graph._http.is_closed

@@ -25,21 +25,34 @@ log = logging.getLogger(__name__)
 _task: Optional[asyncio.Task] = None
 
 
-def _tick(settings: Settings, last_full: Optional[datetime], now: datetime) -> datetime:
-    """Run one sync and return the new 'last full reconcile' timestamp."""
+def _tick(
+    settings: Settings, last_full: Optional[datetime], now: datetime
+) -> Optional[datetime]:
+    """Run one sync and return the new 'last full reconcile' timestamp.
+
+    Returns last_full UNCHANGED when a reconcile did not actually succeed, so a
+    failed reconcile is retried on the next tick rather than deferred for a full
+    RAG_SYNC_FULL_RECONCILE_HOURS while the logs claim everything is healthy.
+    """
     reconcile_after = timedelta(hours=settings.rag_sync_full_reconcile_hours)
     due_for_full = last_full is None or (now - last_full) >= reconcile_after
     try:
-        if due_for_full:
-            sync_once(settings, full=True, trigger="reconcile")
-            return now
-        sync_once(settings, full=False, trigger="scheduled")
-    except Exception as exc:  # noqa: BLE001 - the loop must outlive any single failure
-        log.warning("Scheduled sync failed, continuing: %s: %s", type(exc).__name__, exc)
-        if due_for_full:
-            # Do not record a successful reconcile that did not happen.
-            return last_full if last_full is not None else now - reconcile_after
-    return last_full if last_full is not None else now - reconcile_after
+        # sync_once does not raise: it catches internally and reports via .error.
+        report = sync_once(
+            settings,
+            full=due_for_full,
+            trigger="reconcile" if due_for_full else "scheduled",
+        )
+        failed = bool(getattr(report, "error", ""))
+        if failed:
+            log.warning("Scheduled sync reported a failure: %s", report.error)
+    except Exception as exc:  # noqa: BLE001 - belt and braces; the loop must survive
+        log.warning("Scheduled sync raised, continuing: %s: %s", type(exc).__name__, exc)
+        failed = True
+
+    if due_for_full and not failed:
+        return now
+    return last_full
 
 
 def run_ticks(
@@ -51,6 +64,20 @@ def run_ticks(
     last_full: Optional[datetime] = None
     for _ in range(ticks):
         last_full = _tick(settings, last_full, clock())
+
+
+def _refuse_reason(settings: Settings) -> str:
+    """Why the scheduler must not run, or "" if it may."""
+    if not settings.rag_enabled:
+        return "RAG_ENABLED is false"
+    if settings.rag_source == "sharepoint" and not settings.pg_enabled:
+        # Without Postgres there is no delta link and no content tags, so every
+        # tick re-downloads and re-embeds the whole corpus - one LLM call per
+        # chunk, every interval, forever. Refuse rather than bill for it.
+        return "RAG_SOURCE=sharepoint requires PG_ENABLED=true (no delta link or content tags without it)"
+    if settings.rag_sync_interval_minutes < 1:
+        return "RAG_SYNC_INTERVAL_MINUTES must be at least 1"
+    return ""
 
 
 async def _loop(settings: Settings) -> None:
@@ -77,6 +104,13 @@ def start(settings: Settings | None = None) -> None:
     settings = settings or get_settings()
     if not settings.rag_sync_enabled:
         log.info("RAG_SYNC_ENABLED is false; the index will only update on manual ingestion.")
+        return
+    reason = _refuse_reason(settings)
+    if reason:
+        log.error(
+            "Refusing to start the sync scheduler: %s. Fix the configuration and restart.",
+            reason,
+        )
         return
     if _task is not None and not _task.done():
         return
