@@ -607,6 +607,16 @@ def advisory_lock(
             host=settings.pg_host, port=settings.pg_port, dbname=settings.pg_dbname,
             user=settings.pg_user, password=settings.pg_password, sslmode=settings.pg_sslmode,
             options=f"-c search_path={settings.pg_schema}",
+            # An advisory lock lives as long as its session. If the process is
+            # killed mid-ingest, the backend goes idle STILL HOLDING the lock and
+            # Postgres will not reap it until TCP gives up - observed live at
+            # 1h35m, during which every scheduled sync silently no-ops with
+            # "Another instance is already syncing". Keepalives cut that to about
+            # two minutes (30s idle, then 3 probes 10s apart).
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=3,
         )
         conn.autocommit = True
         with conn.cursor() as cur:
