@@ -79,7 +79,13 @@ def _with_write_retry(operation, description: str):
 
 def get_client(settings: Settings | None = None) -> QdrantClient:
     settings = settings or get_settings()
-    return QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key or None)
+    # An explicit timeout: the client default is far too short for multi-MB
+    # writes across a WAN to the self-hosted VM.
+    return QdrantClient(
+        url=settings.qdrant_url,
+        api_key=settings.qdrant_api_key or None,
+        timeout=int(settings.qdrant_timeout_seconds),
+    )
 
 
 def ensure_collection(client: QdrantClient, collection: str, dense_dim: int) -> None:
@@ -218,9 +224,15 @@ def index_document(
                 },
             )
         )
-    _with_write_retry(
-        lambda: client.upsert(collection_name=collection, points=points),
-        f"upsert of {len(points)} point(s) for {document.name}",
-    )
+    # Batched: one request per rag_upsert_batch_size points. A whole large
+    # document in a single call is multiple MB and times out on the self-hosted
+    # VM deterministically, which no amount of retrying can fix.
+    batch_size = max(1, settings.rag_upsert_batch_size)
+    for start in range(0, len(points), batch_size):
+        batch = points[start : start + batch_size]
+        _with_write_retry(
+            lambda b=batch: client.upsert(collection_name=collection, points=b),
+            f"upsert of {len(batch)} point(s) for {document.name}",
+        )
     return len(points)
 
