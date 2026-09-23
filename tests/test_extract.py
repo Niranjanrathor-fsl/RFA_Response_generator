@@ -150,3 +150,69 @@ def test_no_usable_documents_returns_empty():
     corpus, truncated = build_corpus([ExtractedDocument("blank.txt", "")])
     assert corpus == ""
     assert truncated is False
+
+
+def test_html_extracts_visible_text_and_drops_script_and_style():
+    html = (
+        b"<html><head><style>.a{color:red}</style>"
+        b"<script>var secret = 'do not index me';</script></head>"
+        b"<body><h1>Kairos proposal studio</h1><p>Governed Autonomy applies.</p></body></html>"
+    )
+    doc = extract_text("proposal-studio.html", html)
+    assert "Kairos proposal studio" in doc.text
+    assert "Governed Autonomy applies." in doc.text
+    assert "do not index me" not in doc.text
+    assert "color:red" not in doc.text
+
+
+def test_html_tables_become_pipe_delimited_rows():
+    html = (
+        b"<html><body><table>"
+        b"<tr><th>Area</th><th>Detail</th></tr>"
+        b"<tr><td>Generative AI</td><td>32-38 engagements</td></tr>"
+        b"</table></body></html>"
+    )
+    doc = extract_text("capabilities.html", html)
+    assert "Area | Detail" in doc.text
+    assert "Generative AI | 32-38 engagements" in doc.text
+
+
+def test_legacy_xls_is_now_readable():
+    import xlwt  # test-only writer for the legacy format
+
+    book = xlwt.Workbook()
+    sheet = book.add_sheet("Pricing")
+    sheet.write(0, 0, "Tier")
+    sheet.write(0, 1, "Monthly Fee")
+    sheet.write(1, 0, "Starter")
+    sheet.write(1, 1, "15000")
+    buffer = io.BytesIO()
+    book.save(buffer)
+
+    doc = extract_text("pricing.xls", buffer.getvalue())
+    assert "Tier | Monthly Fee" in doc.text
+    assert "Starter" in doc.text
+
+
+def test_rejected_binary_formats_yield_no_sections():
+    from app.config import get_settings
+    from app.document_sections import extract_sections
+
+    assert extract_sections("clip.mp4", b"\x00\x00\x00\x18ftypmp42", get_settings()) == []
+    assert extract_sections("bundle.zip", b"PK\x03\x04rubbish", get_settings()) == []
+
+
+def test_unknown_extension_that_looks_like_text_is_read():
+    from app.config import get_settings
+    from app.document_sections import extract_sections
+
+    sections = extract_sections("config.xml", b"<root><note>Kairos</note></root>", get_settings())
+    assert sections
+    assert "Kairos" in sections[0][1]
+
+
+def test_unknown_extension_that_is_binary_is_skipped():
+    from app.config import get_settings
+    from app.document_sections import extract_sections
+
+    assert extract_sections("thing.bin", b"\x00\x01\x02\x03\xff\xfe", get_settings()) == []

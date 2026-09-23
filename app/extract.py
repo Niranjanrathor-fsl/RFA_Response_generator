@@ -17,6 +17,16 @@ from pathlib import Path
 from typing import List, Sequence, Tuple
 
 from .config import get_settings
+from .document_sections import (
+    ExtractionError,
+    _decode,
+    extract_docx_sections,
+    extract_html_sections,
+    extract_pdf_sections,
+    extract_pptx_sections,
+    extract_xls_sections,
+    extract_xlsx_sections,
+)
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +37,8 @@ PDF_EXTENSIONS = {".pdf"}
 WORD_EXTENSIONS = {".docx", ".docm", ".dotx"}
 PPT_EXTENSIONS = {".pptx", ".pptm", ".potx"}
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xltx"}
+LEGACY_EXCEL_EXTENSIONS = {".xls"}
+HTML_EXTENSIONS = {".html", ".htm"}
 
 SUPPORTED_EXTENSIONS = (
     TEXT_EXTENSIONS
@@ -36,14 +48,12 @@ SUPPORTED_EXTENSIONS = (
     | WORD_EXTENSIONS
     | PPT_EXTENSIONS
     | EXCEL_EXTENSIONS
+    | LEGACY_EXCEL_EXTENSIONS
+    | HTML_EXTENSIONS
 )
 
-# Legacy binary formats the modern parsers cannot open.
-LEGACY_EXTENSIONS = {".doc", ".ppt", ".xls"}
-
-
-class ExtractionError(ValueError):
-    """Raised when a file cannot be turned into text."""
+# Legacy binary formats the modern parsers cannot open. (.xls is read by xlrd.)
+LEGACY_EXTENSIONS = {".doc", ".ppt"}
 
 
 @dataclass
@@ -66,15 +76,6 @@ class ExtractedDocument:
 
 
 # --------------------------------------------------------------------- helpers
-def _decode(data: bytes) -> str:
-    for encoding in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
-        try:
-            return data.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return data.decode("utf-8", errors="replace")
-
-
 def _clean(text: str) -> str:
     lines = [line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     out: List[str] = []
@@ -91,86 +92,39 @@ def _clean(text: str) -> str:
 
 
 # -------------------------------------------------------------------- parsers
-def _extract_pdf(data: bytes) -> str:
-    from pypdf import PdfReader
-    from pypdf.errors import PdfReadError
+# PDF/DOCX/PPTX/XLSX delegate to app.document_sections - the same comprehensive
+# per-format extraction (including embedded images/charts/scanned pages) used
+# by the RAG ingestion pipeline, so both paths have identical coverage.
+def _join_plain(sections: List[Tuple[str, str]]) -> str:
+    return "\n\n".join(text for _, text in sections if text.strip())
 
-    try:
-        reader = PdfReader(io.BytesIO(data))
-    except PdfReadError as exc:
-        raise ExtractionError(f"PDF could not be opened: {exc}") from exc
-    if getattr(reader, "is_encrypted", False):
-        try:
-            reader.decrypt("")
-        except Exception as exc:  # noqa: BLE001 - pypdf raises assorted types here
-            raise ExtractionError(
-                "PDF is password-protected. Remove the password and re-upload."
-            ) from exc
-    pages: List[str] = []
-    for index, page in enumerate(reader.pages, start=1):
-        try:
-            pages.append(page.extract_text() or "")
-        except Exception as exc:  # noqa: BLE001 - never fail the whole doc on one page
-            log.warning("PDF page %d could not be read: %s", index, exc)
-    return "\n\n".join(p for p in pages if p.strip())
+
+def _join_with_markers(sections: List[Tuple[str, str]]) -> str:
+    return "\n\n".join(f"--- {location} ---\n{text}" for location, text in sections if text.strip())
+
+
+def _extract_pdf(data: bytes) -> str:
+    return _join_plain(extract_pdf_sections(data, get_settings()))
 
 
 def _extract_docx(data: bytes) -> str:
-    import docx
-
-    document = docx.Document(io.BytesIO(data))
-    parts: List[str] = [p.text for p in document.paragraphs if p.text.strip()]
-    for table in document.tables:
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells]
-            if any(cells):
-                parts.append(" | ".join(cells))
-    return "\n".join(parts)
+    return _join_plain(extract_docx_sections(data, get_settings()))
 
 
 def _extract_pptx(data: bytes) -> str:
-    from pptx import Presentation
-
-    presentation = Presentation(io.BytesIO(data))
-    parts: List[str] = []
-    for index, slide in enumerate(presentation.slides, start=1):
-        slide_parts: List[str] = []
-        for shape in slide.shapes:
-            if shape.has_text_frame and shape.text_frame.text.strip():
-                slide_parts.append(shape.text_frame.text.strip())
-            if getattr(shape, "has_table", False):
-                for row in shape.table.rows:
-                    cells = [c.text.strip() for c in row.cells]
-                    if any(cells):
-                        slide_parts.append(" | ".join(cells))
-        notes = ""
-        if slide.has_notes_slide and slide.notes_slide.notes_text_frame is not None:
-            notes = slide.notes_slide.notes_text_frame.text.strip()
-        if slide_parts or notes:
-            body = "\n".join(slide_parts)
-            if notes:
-                body += f"\n[Speaker notes] {notes}"
-            parts.append(f"--- Slide {index} ---\n{body}")
-    return "\n\n".join(parts)
+    return _join_with_markers(extract_pptx_sections(data, get_settings()))
 
 
 def _extract_xlsx(data: bytes) -> str:
-    from openpyxl import load_workbook
+    return _join_with_markers(extract_xlsx_sections(data, get_settings()))
 
-    workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-    parts: List[str] = []
-    try:
-        for sheet in workbook.worksheets:
-            rows: List[str] = []
-            for row in sheet.iter_rows(values_only=True):
-                cells = ["" if v is None else str(v).strip() for v in row]
-                if any(cells):
-                    rows.append(" | ".join(cells))
-            if rows:
-                parts.append(f"--- Sheet: {sheet.title} ---\n" + "\n".join(rows))
-    finally:
-        workbook.close()
-    return "\n\n".join(parts)
+
+def _extract_xls(data: bytes) -> str:
+    return _join_with_markers(extract_xls_sections(data, get_settings()))
+
+
+def _extract_html(data: bytes) -> str:
+    return _join_plain(extract_html_sections(data, get_settings()))
 
 
 def _extract_csv(data: bytes, delimiter: str) -> str:
@@ -213,6 +167,10 @@ def extract_text(filename: str, data: bytes) -> ExtractedDocument:
         text = _extract_pptx(data)
     elif suffix in EXCEL_EXTENSIONS:
         text = _extract_xlsx(data)
+    elif suffix in LEGACY_EXCEL_EXTENSIONS:
+        text = _extract_xls(data)
+    elif suffix in HTML_EXTENSIONS:
+        text = _extract_html(data)
     elif suffix in CSV_EXTENSIONS:
         text = _extract_csv(data, "\t" if suffix == ".tsv" else ",")
     elif suffix in JSON_EXTENSIONS:
@@ -222,7 +180,8 @@ def extract_text(filename: str, data: bytes) -> ExtractedDocument:
     else:
         raise ExtractionError(
             f"Unsupported file type '{suffix}'. Supported: PDF, Word (.docx), "
-            "PowerPoint (.pptx), Excel (.xlsx), and text/CSV/TSV/JSON/Markdown."
+            "PowerPoint (.pptx), Excel (.xlsx/.xls), HTML, and "
+            "text/CSV/TSV/JSON/Markdown."
         )
 
     text = _clean(text)
