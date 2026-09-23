@@ -249,3 +249,40 @@ def test_the_source_is_closed_even_when_the_run_fails(monkeypatch, harness):
 
 def _boom(*a, **k):
     raise RuntimeError("qdrant unreachable")
+
+
+def test_a_network_outage_aborts_instead_of_burning_the_whole_queue(monkeypatch, harness):
+    """Observed live: the network dropped mid-run and all 99 remaining documents
+    failed inside one second, each taking a retry strike. Three such blips would
+    permanently abandon the entire corpus. Stop after a run of consecutive
+    failures instead - they signal broken infrastructure, not bad documents."""
+    def explode(*a, **k):
+        raise ConnectionError("Failed to resolve 'login.microsoftonline.com'")
+
+    monkeypatch.setattr(sync_module, "chunk_document", explode)
+    settings = _settings(rag_sync_abort_after_consecutive_failures=5)
+    docs = [_doc(f"i{n}", f"doc{n}.docx", content_hash=f"h{n}") for n in range(40)]
+    report = _run(monkeypatch, harness, SourceBatch(docs, [], "l"), settings=settings)
+
+    assert report.documents_failed == 5, "should stop after 5 consecutive failures, not attempt all 40"
+    assert "consecutive failures" in report.error
+
+
+def test_isolated_failures_do_not_trip_the_abort(monkeypatch, harness):
+    """One bad file among good ones must not stop the run."""
+    calls = {"n": 0}
+
+    def sometimes(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("one bad document")
+        return ["c1"]
+
+    monkeypatch.setattr(sync_module, "chunk_document", sometimes)
+    settings = _settings(rag_sync_abort_after_consecutive_failures=5)
+    docs = [_doc(f"i{n}", f"doc{n}.docx", content_hash=f"h{n}") for n in range(6)]
+    report = _run(monkeypatch, harness, SourceBatch(docs, [], "l"), settings=settings)
+
+    assert report.documents_failed == 1
+    assert report.documents_indexed == 5
+    assert report.error == ""

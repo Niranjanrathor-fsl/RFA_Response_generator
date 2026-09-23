@@ -110,6 +110,8 @@ def sync_once(
             states = store.get_document_states(settings)
             hash_owners = store.get_content_hash_owners(settings)
             retryable_failures = 0
+            consecutive_failures = 0
+            abort_after = settings.rag_sync_abort_after_consecutive_failures
 
             for document in batch.documents:
                 if not _needs_ingestion(document, states.get(document.item_id), settings):
@@ -141,8 +143,20 @@ def sync_once(
                     attempts = (previous.attempt_count if previous else 0) + 1
                     if attempts < settings.rag_sync_max_attempts:
                         retryable_failures += 1
+                    consecutive_failures += 1
+                    if abort_after and consecutive_failures >= abort_after:
+                        report.error = (
+                            f"Aborted after {consecutive_failures} consecutive failures - "
+                            "this looks like an outage, not bad documents."
+                        )
+                        log.error(
+                            "%s Remaining documents were left untouched so they keep their "
+                            "retry budget; re-run once the problem is resolved.", report.error,
+                        )
+                        break
                     continue
 
+                consecutive_failures = 0
                 if written == 0:
                     # Recorded anyway, so an unreadable file is not retried every sync.
                     report.documents_skipped += 1
