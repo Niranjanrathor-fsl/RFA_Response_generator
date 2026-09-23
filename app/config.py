@@ -105,6 +105,13 @@ class Settings(BaseSettings):
     rag_cache_similarity_threshold: float = 0.95
     rag_cache_ttl_hours: int = 168
 
+    # Qdrant write sizing. A 132-chunk document is ~10.8 MB in one request
+    # (132 points x 4 dense vectors x 3072 floats), which the self-hosted VM
+    # times out on every time - retrying the same payload cannot help. Batching
+    # keeps each request small enough to land.
+    rag_upsert_batch_size: int = 32
+    qdrant_timeout_seconds: float = 120.0
+
     # ------------------------------------------- SharePoint delta sync
     # Background polling that keeps the index fresh. The Graph delta query both
     # enumerates the whole nested folder tree and reports incremental changes;

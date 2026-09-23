@@ -138,3 +138,54 @@ def test_delete_document_retries_a_transient_qdrant_timeout():
     client = _FlakyClient(failures=1)
     delete_document(client, "kb", "item-abc")
     assert client.deletes == 2
+
+
+# ------------------------------------------------------ upsert batching
+# A 132-point document is ~10.8 MB in ONE request (132 points x 4 dense vectors
+# x 3072 floats). The self-hosted Qdrant VM times out on it every time, so the
+# retry above re-sent the same oversized payload and failed 3/3 identically.
+# Batching is the actual remedy; retry only covers genuinely transient blips.
+
+class _RecordingClient:
+    def __init__(self):
+        self.batch_sizes = []
+
+    def upsert(self, collection_name, points):
+        self.batch_sizes.append(len(points))
+
+    def collection_exists(self, name):
+        return True
+
+
+def _index_n(client, monkeypatch, n, batch_size):
+    monkeypatch.setattr(index_module, "generate_retrieval_proxy", lambda *a, **k: "")
+    document = SourceDocument(
+        item_id="i1", name="big.docx", folder_path="", content_tag="t",
+        content_hash="h", modified_at=datetime.now(timezone.utc),
+        web_url="", size=1,
+    )
+    chunks = [Chunk(text=f"chunk {i}", location="", chunk_index=i) for i in range(n)]
+    settings = _settings().model_copy(update={"rag_upsert_batch_size": batch_size})
+    return index_module.index_document(
+        client, "kb", document, chunks, _Dense(), _Sparse(), settings
+    )
+
+
+def test_large_documents_are_upserted_in_batches(monkeypatch):
+    client = _RecordingClient()
+    written = _index_n(client, monkeypatch, n=132, batch_size=32)
+    assert written == 132
+    assert client.batch_sizes == [32, 32, 32, 32, 4]
+
+
+def test_a_small_document_is_still_a_single_request(monkeypatch):
+    client = _RecordingClient()
+    _index_n(client, monkeypatch, n=5, batch_size=32)
+    assert client.batch_sizes == [5]
+
+
+def test_qdrant_client_is_given_a_timeout():
+    """The client default is far too short for multi-MB writes over a WAN."""
+    import inspect
+    source = inspect.getsource(index_module.get_client)
+    assert "timeout" in source
