@@ -106,6 +106,14 @@ class Settings(BaseSettings):
     rag_cache_ttl_hours: int = 168
 
     # ------------------------------------------- SharePoint delta sync
+    # Background polling that keeps the index fresh. The Graph delta query both
+    # enumerates the whole nested folder tree and reports incremental changes;
+    # webhooks are deferred until the app has a public HTTPS endpoint.
+    rag_sync_enabled: bool = False
+    rag_sync_interval_minutes: int = 15
+    # Safety net recommended by Microsoft's scale guidance: re-enumerate
+    # periodically so nothing is permanently missed, and retry failed documents.
+    rag_sync_full_reconcile_hours: int = 24
     # Give up on a document after this many consecutive ingestion failures. It is
     # retried again only once its content changes.
     rag_sync_max_attempts: int = 3
@@ -239,6 +247,16 @@ class Settings(BaseSettings):
                 ):
                     if not value:
                         problems.append(f"RAG_SOURCE=sharepoint but {name} is not set.")
+        if self.rag_sync_enabled:
+            if not self.rag_enabled:
+                problems.append("RAG_SYNC_ENABLED=true but RAG_ENABLED is false - nothing will sync.")
+            if self.rag_source == "sharepoint" and not self.pg_enabled:
+                problems.append(
+                    "RAG_SYNC_ENABLED=true with RAG_SOURCE=sharepoint requires PG_ENABLED=true: "
+                    "the delta link and per-document state have nowhere else to live."
+                )
+            if self.rag_sync_interval_minutes < 1:
+                problems.append("RAG_SYNC_INTERVAL_MINUTES must be at least 1.")
         if self.pg_enabled:
             for name, value in (
                 ("PG_HOST", self.pg_host),

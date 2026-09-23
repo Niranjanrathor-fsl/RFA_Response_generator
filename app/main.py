@@ -48,7 +48,16 @@ async def lifespan(app: FastAPI):
         log.error("FATAL: %s", exc)
         raise
 
+    # Background delta sync. No-ops unless RAG_SYNC_ENABLED=true; the Postgres
+    # advisory lock inside sync_once keeps multiple workers/instances from
+    # ingesting simultaneously.
+    from .rag import scheduler
+
+    scheduler.start(settings)
+
     yield
+
+    await scheduler.stop()
     log.info("Shutting down.")
 
 
