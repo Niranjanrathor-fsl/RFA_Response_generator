@@ -151,6 +151,20 @@ class GraphClient:
             return response.content
         raise GraphError("Download failed.")
 
+    def download_item(self, drive_id: str, item_id: str) -> bytes:
+        """Fetch file content through the authenticated /content endpoint.
+
+        This is the path the delta pipeline uses. Delta responses do NOT carry
+        @microsoft.graph.downloadUrl - only the /children collection does - so a
+        pre-signed URL is a fast path we take when offered, never something to
+        depend on.
+        """
+        url = f"{GRAPH_BASE}/drives/{drive_id}/items/{item_id}/content"
+        response = self._request("GET", url, follow_redirects=True)
+        if response.status_code >= 400:
+            raise GraphError(f"Content download for item {item_id} returned {response.status_code}.")
+        return response.content
+
     # -------------------------------------------------------------- resolve
     def resolve_site_id(self) -> str:
         url = self.settings.sharepoint_site_url.rstrip("/")
