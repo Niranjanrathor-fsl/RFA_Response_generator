@@ -216,3 +216,60 @@ def test_unknown_extension_that_is_binary_is_skipped():
     from app.document_sections import extract_sections
 
     assert extract_sections("thing.bin", b"\x00\x01\x02\x03\xff\xfe", get_settings()) == []
+
+
+# ------------------------------------------------------------ image uploads
+def _png_bytes(width=80, height=60):
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), (10, 80, 160)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_image_formats_are_accepted_for_upload():
+    from app.extract import SUPPORTED_EXTENSIONS
+
+    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+        assert ext in SUPPORTED_EXTENSIONS, f"{ext} should be uploadable"
+
+
+def test_image_upload_is_read_by_vision(monkeypatch):
+    """A chart or screenshot must become text, the same way it already does on
+    the RAG ingestion path. Vision is forced off suite-wide by conftest, so this
+    test turns it on for itself and stubs the model call."""
+    import app.document_sections as ds
+    import app.extract as ex
+    from app.config import get_settings
+
+    vision_on = get_settings().model_copy(update={"rag_vision_enabled": True})
+    monkeypatch.setattr(ex, "get_settings", lambda: vision_on)
+    monkeypatch.setattr(ds, "describe_or_skip", lambda *a, **k: "Bar chart: FY23 120, FY24 210.")
+
+    doc = extract_text("chart.png", _png_bytes())
+    assert "FY24 210" in doc.text
+    assert not doc.is_empty
+
+
+def test_unreadable_image_explains_itself_rather_than_failing(monkeypatch):
+    """Vision off, or a purely decorative image: the user needs to know why
+    nothing came back, not a bare 'no readable text' error."""
+    import app.document_sections as ds
+
+    monkeypatch.setattr(ds, "describe_or_skip", lambda *a, **k: None)
+    doc = extract_text("logo.png", _png_bytes())
+    assert doc.is_empty
+    assert "image" in doc.note.lower()
+
+
+def test_config_groups_extensions_for_display():
+    """The UI showed the alphabetically-first 8 extensions, which is meaningless
+    to a user. The server should hand over a curated, ordered list instead."""
+    from app.routes.health import client_config
+
+    config = client_config()
+    assert "accepted_display" in config
+    display = config["accepted_display"]
+    assert display[0].startswith("PDF")
+    joined = " ".join(display)
+    assert "Word" in joined and "Images" in joined
