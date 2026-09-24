@@ -285,3 +285,15 @@ def test_render_is_stateless_and_repeatable(client, stub_llm):
 def test_render_validates_the_document_body(client):
     response = client.post("/api/render/dashboard", json={"document": {"tabs": "nope"}})
     assert response.status_code == 422
+
+
+def test_hidden_attribute_is_enforced_in_css():
+    """The login gate toggles `hidden` on #app, but `.app{display:grid}` is a
+    class selector and outranks the browser's default [hidden]{display:none}.
+    Without an explicit rule the app renders straight through the sign-in card.
+    """
+    from app.config import get_settings
+
+    css = (get_settings().static_dir / "css" / "app.css").read_text(encoding="utf-8")
+    assert "[hidden]" in css
+    assert "display:none!important" in css.replace(" ", "")
