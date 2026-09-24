@@ -418,6 +418,16 @@
   function showLogin() {
     $('#app').hidden = true;
     $('#loginCard').hidden = false;
+    // "Sign in with SSO" is only true in OIDC mode; password mode shows a form.
+    var mode = state.config && state.config.auth_mode;
+    if (mode === 'password') {
+      var button = $('#loginBtn');
+      if (button) { button.textContent = 'Sign in'; }
+      var blurb = $('#loginCard') && $('#loginCard').querySelector('p');
+      if (blurb) {
+        blurb.textContent = 'This application is restricted. Sign in with the username and password your administrator gave you.';
+      }
+    }
   }
 
   function showApp() {
