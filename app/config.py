@@ -158,8 +158,15 @@ class Settings(BaseSettings):
 
     # --------------------------------------------------------------- auth
     # "disabled" -> open to anyone who can reach the URL (intranet/VPN only!)
+    # "password" -> username/password against a JSON file on the server. For
+    #               deployments with no identity provider available.
     # "oidc"     -> Azure AD / any OpenID Connect provider (see README)
-    auth_mode: Literal["disabled", "oidc"] = "disabled"
+    auth_mode: Literal["disabled", "password", "oidc"] = "disabled"
+    # Where password users live. Holds salted scrypt hashes, never plaintext.
+    auth_users_file: str = "users.json"
+    # Failed sign-ins allowed per username before a cool-off, and how long it lasts.
+    auth_max_failed_logins: int = 5
+    auth_lockout_minutes: int = 15
     session_secret: str = "change-me-in-production"
     session_cookie_name: str = "fs_rfp_session"
     session_max_age_seconds: int = 60 * 60 * 8
@@ -277,6 +284,17 @@ class Settings(BaseSettings):
             ):
                 if not value:
                     problems.append(f"PG_ENABLED=true but {name} is not set.")
+        if self.auth_mode == "password":
+            from pathlib import Path as _Path
+
+            users_path = _Path(self.auth_users_file)
+            if not users_path.is_absolute():
+                users_path = BASE_DIR / users_path
+            if not users_path.is_file():
+                problems.append(
+                    f"AUTH_MODE=password but there are no users yet ({users_path} "
+                    "does not exist). Create one: python -m app.users add you@firstsource.com"
+                )
         if self.auth_mode == "oidc":
             for name, value in (
                 ("OIDC_DISCOVERY_URL", self.oidc_discovery_url),

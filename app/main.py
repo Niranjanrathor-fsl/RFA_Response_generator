@@ -97,11 +97,9 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(generate.router)
-    if settings.auth_mode == "oidc":
-        app.include_router(auth_routes.router)
-    else:
-        # /auth/me is handy for the frontend regardless of mode.
-        app.include_router(auth_routes.router, include_in_schema=False)
+    # Every mode mounts the same router; the routes themselves branch on
+    # auth_mode. /auth/me is useful to the frontend regardless.
+    app.include_router(auth_routes.router, include_in_schema=settings.auth_mode != "disabled")
 
     static_dir: Path = settings.static_dir
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
