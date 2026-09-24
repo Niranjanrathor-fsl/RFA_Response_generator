@@ -1,26 +1,30 @@
 /*
- * Firstsource RFP Response Generator - frontend.
+ * Firstsource RFP Response Generator - frontend (2026 wizard redesign).
  *
- * This file replaces the in-browser AI bridge used by the original Cowork skill.
- * That version called Claude directly from the page; this version calls our own
- * backend, which holds the API key and the knowledge base:
+ * This calls our own backend, which holds the API key and the knowledge base:
  *
  *   POST /api/generate       multipart upload -> validated response document
  *   POST /api/render/{fmt}   response document -> downloadable file
  *
- * The browser never sees the Anthropic API key, the prompt or the knowledge base.
+ * The browser never sees the Azure OpenAI key, the prompt or the knowledge base.
+ * The visual design (sidebar + 4-step wizard) came from a separate static-HTML
+ * export; this file keeps that markup/CSS but replaces its logic with real
+ * calls to the endpoints above (the export had no backend wiring at all - it
+ * called Claude directly from the browser and built Office files client-side).
  */
 (function () {
   'use strict';
 
   var $ = function (selector) { return document.querySelector(selector); };
+  var LOGO_WHITE = '/static/logos/Firstsource-logo-white.png';
 
   var state = {
     files: [],          // File objects queued for upload
     formats: ['dashboard'],
     config: null,
     result: null,       // { document, sources, mode, question_count, ... }
-    objectUrls: []      // revoked on teardown
+    objectUrls: [],     // revoked on teardown
+    step: 0
   };
 
   // ------------------------------------------------------------------ helpers
@@ -38,7 +42,7 @@
 
   function setStatus(message, kind) {
     var box = $('#status');
-    box.className = 'status show' + (kind === 'error' ? ' error' : '');
+    box.className = kind === 'error' ? 'show err' : 'show';
     box.innerHTML = kind === 'busy'
       ? '<span class="spinner"></span>' + escapeHtml(message)
       : escapeHtml(message);
@@ -46,7 +50,7 @@
 
   function clearStatus() {
     var box = $('#status');
-    box.className = 'status';
+    box.className = '';
     box.innerHTML = '';
   }
 
@@ -58,7 +62,7 @@
   // ------------------------------------------------------------- file queueing
   function renderChips() {
     var container = $('#chips');
-    if (!state.files.length) { container.innerHTML = ''; return; }
+    if (!state.files.length) { container.innerHTML = ''; updateReadyState(); return; }
 
     var html = state.files.map(function (file, index) {
       return '<span class="filechip">'
@@ -76,6 +80,7 @@
         + '<a href="#" data-clear="1">Clear all</a></div>';
     }
     container.innerHTML = html;
+    updateReadyState();
   }
 
   function addFiles(fileList) {
@@ -116,7 +121,7 @@
   }
 
   function wireDropzone() {
-    var dropzone = $('#dropzone');
+    var dropzone = $('#dz');
     var input = $('#fileInput');
 
     dropzone.addEventListener('click', function () { input.click(); });
@@ -155,6 +160,11 @@
         renderChips();
       }
     });
+
+    $('#pasteBox').addEventListener('input', function () {
+      $('#charCount').textContent = $('#pasteBox').value.length.toLocaleString() + ' characters';
+      updateReadyState();
+    });
   }
 
   function wireFormatPicker() {
@@ -170,6 +180,7 @@
           state.formats.push(fmt);
           button.classList.add('active');
         }
+        updateReadyState();
       });
     });
   }
@@ -193,13 +204,14 @@
     var pasted = $('#pasteBox').value.trim();
     if (!state.files.length && !pasted) {
       setStatus('Add at least one document or paste some content first.', 'error');
+      showPane(0);
       return;
     }
 
     var form = new FormData();
     state.files.forEach(function (file) { form.append('files', file, file.name); });
     form.append('pasted', pasted);
-    form.append('title', $('#titleInput').value.trim());
+    form.append('title', $('#titleIn').value.trim());
     form.append('audience', $('#audience').value);
 
     var sourceCount = state.files.length + (pasted ? 1 : 0);
@@ -267,67 +279,188 @@
     document.body.removeChild(link);
   }
 
+  // --------------------------------------------------------- result preview
+  // Pure display helpers: render the SAME JSON shape /api/generate returns
+  // (title/subtitle/metrics/tabs with intro/bullets/table/qa/callout) as a
+  // book-style preview. No network calls of their own - actual downloads for
+  // every format (including dashboard/qa) always go through renderFormat().
+  var ICONS = {
+    doc: '<path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6"/>',
+    chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/>',
+    check: '<path d="M20 6L9 17l-5-5"/>',
+    shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+    gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"/>',
+    bulb: '<path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12c1 1 1 2 1 3h6c0-1 0-2 1-3a7 7 0 0 0-4-12z"/>',
+    layers: '<path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/>',
+    users: '<circle cx="9" cy="8" r="3"/><path d="M3 20c0-3 3-5 6-5s6 2 6 5"/><path d="M16 5a3 3 0 0 1 0 6M18 20c0-2-1-3.5-2.5-4.5"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    growth: '<path d="M3 17l6-6 4 4 8-8"/><path d="M21 7h-5M21 7v5"/>',
+    lock: '<rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+    flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>'
+  };
+  var ICON_ORDER = ['doc', 'chart', 'target', 'layers', 'gear', 'bulb', 'shield', 'users', 'clock', 'growth', 'flag', 'check'];
+  function svg(name) {
+    var d = ICONS[name] || ICONS.doc;
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + d + '</svg>';
+  }
+  function pickIcon(text, i) {
+    var t = (text || '').toLowerCase();
+    if (/overview|summary/.test(t)) return 'doc';
+    if (/response|answer|question|q&a|rfp|rfi/.test(t)) return 'check';
+    if (/proof|outcome|result|impact|roi|metric/.test(t)) return 'target';
+    if (/approach|method|process|engage|deliver/.test(t)) return 'gear';
+    if (/capab|platform|architecture|tech|solution|kairos/.test(t)) return 'layers';
+    if (/innovat|lab|emerging|future|research/.test(t)) return 'bulb';
+    if (/security|risk|complian|govern|liab/.test(t)) return 'shield';
+    if (/team|people|talent|resource|staff/.test(t)) return 'users';
+    if (/roadmap|timeline|phase|plan|schedule/.test(t)) return 'clock';
+    if (/growth|portfolio|scale|revenue|adoption/.test(t)) return 'chart';
+    if (/differenti|why|advantage|win/.test(t)) return 'flag';
+    return ICON_ORDER[i % ICON_ORDER.length];
+  }
+
+  function renderDashboardPreview(doc) {
+    var metrics = (doc.metrics || []).slice(0, 8).map(function (m, i) {
+      return '<div class="metric"><div class="micon">' + svg(m.icon || pickIcon(m.label, i)) + '</div>'
+        + '<div class="val' + (m.accent ? ' accent' : '') + '">' + escapeHtml(m.value) + '</div>'
+        + '<div class="lbl">' + escapeHtml(m.label) + '</div></div>';
+    }).join('');
+    var tabs = doc.tabs || [];
+    var btns = tabs.map(function (t, i) {
+      return '<button class="' + (i === 0 ? 'active' : '') + '" data-i="' + i + '"><span class="nicon">'
+        + svg(t.icon || pickIcon(t.name, i)) + '</span>' + escapeHtml(t.name || ('Tab ' + (i + 1))) + '</button>';
+    }).join('');
+    var panels = tabs.map(function (t, i) {
+      var body = '';
+      if (t.intro) { body += '<p class="intro">' + escapeHtml(t.intro) + '</p>'; }
+      if (t.qa && t.qa.length) {
+        body += t.qa.map(function (x) {
+          return '<div class="qa"><div class="qq">' + escapeHtml(x.n ? x.n + '. ' : '') + escapeHtml(x.q || '') + '</div>'
+            + '<div class="qans">' + escapeHtml(x.a || '') + '</div></div>';
+        }).join('');
+      }
+      if (t.bullets && t.bullets.length) {
+        body += '<ul class="clean">' + t.bullets.map(function (b) { return '<li>' + escapeHtml(b) + '</li>'; }).join('') + '</ul>';
+      }
+      if (t.table && t.table.headers) {
+        body += '<table><thead><tr>' + t.table.headers.map(function (c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('') + '</tr></thead>'
+          + '<tbody>' + (t.table.rows || []).map(function (r) {
+            return '<tr>' + r.map(function (c) { return '<td>' + escapeHtml(c) + '</td>'; }).join('') + '</tr>';
+          }).join('') + '</tbody></table>';
+      }
+      if (t.callout && t.callout.body) {
+        body += '<div class="callout"><b>' + escapeHtml(t.callout.title || 'Key takeaway') + ':</b> ' + escapeHtml(t.callout.body) + '</div>';
+      }
+      return '<section class="panel' + (i === 0 ? ' active' : '') + '" data-i="' + i + '"><h3>' + escapeHtml(t.name) + '</h3><div class="rule"></div>' + body + '</section>';
+    }).join('');
+    var year = new Date().getFullYear();
+    var html = '<div class="d-head"><div><h2>' + escapeHtml(doc.title || 'Executive Dashboard') + '</h2><p>' + escapeHtml(doc.subtitle || '') + '</p></div>'
+      + '<img src="' + LOGO_WHITE + '" alt="Firstsource" style="height:26px;width:auto"></div>'
+      + '<div class="metrics">' + metrics + '</div>'
+      + '<div class="book"><nav class="sidenav">' + btns + '</nav><div class="content"><div class="panels">' + panels + '</div></div></div>'
+      + '<div class="d-foot">Copyright &copy; ' + year + ' Firstsource. All rights reserved.<span class="chip">Intelligence that Operates</span></div>';
+    $('#dashboard').innerHTML = html;
+    var buttons = $('#dashboard').querySelectorAll('.sidenav button');
+    var sections = $('#dashboard').querySelectorAll('.panel');
+    buttons.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        buttons.forEach(function (b) { b.classList.remove('active'); });
+        sections.forEach(function (s) { s.classList.remove('active'); });
+        btn.classList.add('active');
+        $('#dashboard').querySelector('.panel[data-i="' + btn.dataset.i + '"]').classList.add('active');
+      });
+    });
+  }
+
+  function renderQaPreview(doc) {
+    var qaList = null, tbl = null;
+    (doc.tabs || []).forEach(function (t) {
+      if (!qaList && t.qa && t.qa.length) { qaList = t.qa; }
+      if (!tbl && t.table && t.table.headers) { tbl = t.table; }
+    });
+    var body = '';
+    if (qaList) {
+      body = qaList.map(function (x) {
+        return '<div class="qa"><div class="qq">' + escapeHtml(x.n ? x.n + '. ' : '') + escapeHtml(x.q || '') + '</div>'
+          + '<div class="qans">' + escapeHtml(x.a || '') + '</div></div>';
+      }).join('');
+    } else if (tbl) {
+      body = '<table><thead><tr>' + tbl.headers.map(function (c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('') + '</tr></thead>'
+        + '<tbody>' + (tbl.rows || []).map(function (r) {
+          return '<tr>' + r.map(function (c) { return '<td>' + escapeHtml(c) + '</td>'; }).join('') + '</tr>';
+        }).join('') + '</tbody></table>';
+    } else {
+      (doc.tabs || []).forEach(function (t) {
+        body += '<h3>' + escapeHtml(t.name) + '</h3>';
+        if (t.intro) { body += '<p class="intro">' + escapeHtml(t.intro) + '</p>'; }
+        if (t.bullets && t.bullets.length) {
+          body += '<ul class="clean">' + t.bullets.map(function (b) { return '<li>' + escapeHtml(b) + '</li>'; }).join('') + '</ul>';
+        }
+      });
+    }
+    var year = new Date().getFullYear();
+    $('#dashboard').innerHTML = '<div class="d-head"><div><h2>' + escapeHtml(doc.title || 'Response to Questions') + '</h2>'
+      + '<p>' + escapeHtml(doc.subtitle || '') + '</p></div><img src="' + LOGO_WHITE + '" alt="Firstsource" style="height:26px;width:auto"></div>'
+      + '<div class="panels">' + body + '</div>'
+      + '<div class="d-foot">Copyright &copy; ' + year + ' Firstsource. All rights reserved.<span class="chip">Intelligence that Operates</span></div>';
+  }
+
+  function successCard(doc) {
+    var year = new Date().getFullYear();
+    $('#dashboard').innerHTML = '<div class="d-head"><div><h2>Files ready</h2><p>' + escapeHtml(doc.title || '') + '</p></div>'
+      + '<img src="' + LOGO_WHITE + '" alt="Firstsource" style="height:26px;width:auto"></div>'
+      + '<div class="panels"><p class="intro">Use the download button(s) above to save your requested format(s).</p></div>'
+      + '<div class="d-foot">Copyright &copy; ' + year + ' Firstsource. All rights reserved.<span class="chip">Intelligence that Operates</span></div>';
+  }
+
   // ------------------------------------------------------------------- views
   function showLogin() {
-    $('#intake').hidden = true;
-    $('#results').classList.remove('show');
+    $('#app').hidden = true;
     $('#loginCard').hidden = false;
   }
 
-  function showIntake() {
+  function showApp() {
     $('#loginCard').hidden = true;
-    $('#results').classList.remove('show');
-    $('#intake').hidden = false;
+    $('#app').hidden = false;
   }
 
   async function showResults() {
     var result = state.result;
     var doc = result.document;
 
-    $('#resultTitle').textContent = doc.title || 'Firstsource response';
-    $('#resultSubtitle').textContent = doc.subtitle || '';
-
-    var badges = [];
-    badges.push({
-      text: result.mode === 'rfi'
-        ? result.question_count + ' question' + (result.question_count === 1 ? '' : 's') + ' answered'
-        : (doc.tabs || []).length + ' section' + ((doc.tabs || []).length === 1 ? '' : 's'),
-      accent: true
-    });
-    if ((result.sources || []).length) {
-      badges.push({ text: result.sources.length + ' source document' + (result.sources.length === 1 ? '' : 's') });
+    var quality = result.quality;
+    if (quality && quality.flag) {
+      var qLabel = quality.flag === 'green' ? 'Well-grounded' : quality.flag === 'amber' ? 'Review recommended' : 'Verify carefully';
+      $('#qualityBadge').innerHTML = '<span class="quality-badge ' + quality.flag + '">'
+        + '<span class="qb-dot"></span>Quality score: ' + quality.score + '/100 &middot; ' + escapeHtml(qLabel)
+        + (quality.reason ? '<span class="qb-reason"> &mdash; ' + escapeHtml(quality.reason) + '</span>' : '')
+        + '</span>';
+    } else {
+      $('#qualityBadge').innerHTML = '';
     }
-    if (result.model) { badges.push({ text: result.model }); }
-    $('#resultBadges').innerHTML = badges.map(function (badge) {
-      return '<span class="badge' + (badge.accent ? ' accent' : '') + '">' + escapeHtml(badge.text) + '</span>';
-    }).join('');
 
     var notices = [];
     if (result.truncated) {
-      notices.push({
-        kind: 'warn',
-        text: 'Your source content was long and was truncated before being sent to the model. '
-            + 'For very large documents, split them or generate section by section.'
-      });
+      notices.push('Your source content was long and was truncated before being sent to the model. '
+        + 'For very large documents, split them or generate section by section.');
     }
     (result.sources || []).forEach(function (source) {
-      if (source.note) {
-        notices.push({ kind: 'warn', text: source.name + ': ' + source.note });
-      }
+      if (source.note) { notices.push(source.name + ': ' + source.note); }
     });
-    $('#resultNotices').innerHTML = notices.map(function (notice) {
-      return '<div class="notice ' + notice.kind + '">' + escapeHtml(notice.text) + '</div>';
+    $('#resultNotices').innerHTML = notices.map(function (text) {
+      return '<div class="notice warn">' + escapeHtml(text) + '</div>';
     }).join('');
 
-    // One download button per requested format, plus previewing the dashboard inline.
-    var container = $('#downloads');
-    container.innerHTML = '<span class="label">Download:</span>';
     var labels = (state.config && state.config.formats) || {};
-    state.formats.forEach(function (fmt) {
-      var button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'btn secondary';
-      button.textContent = labels[fmt] || fmt;
+    var actionsHtml = '<button class="btn secondary" id="againBtn">&larr; Build another</button>';
+    state.formats.forEach(function (fmt, i) {
+      actionsHtml += '<button type="button" class="btn" id="dlF' + i + '">' + escapeHtml(labels[fmt] || fmt) + '</button>';
+    });
+    $('#dashActions').innerHTML = actionsHtml;
+    $('#againBtn').addEventListener('click', restart);
+    state.formats.forEach(function (fmt, i) {
+      var button = document.getElementById('dlF' + i);
       button.addEventListener('click', async function () {
         var original = button.textContent;
         button.disabled = true;
@@ -335,34 +468,26 @@
         try {
           var file = await renderFormat(fmt);
           downloadBlob(file.blob, file.filename);
-          button.textContent = original;
         } catch (error) {
-          button.textContent = original;
           setStatus(error.message || String(error), 'error');
         } finally {
+          button.textContent = original;
           button.disabled = false;
         }
       });
-      container.appendChild(button);
     });
 
-    $('#intake').hidden = true;
-    $('#results').classList.add('show');
-    window.scrollTo(0, 0);
-
-    if (state.formats.indexOf('dashboard') >= 0 || state.formats.indexOf('qa') >= 0) {
-      var previewFormat = state.formats.indexOf('dashboard') >= 0 ? 'dashboard' : 'qa';
-      try {
-        var preview = await renderFormat(previewFormat);
-        var html = await preview.blob.text();
-        $('#previewWrap').hidden = false;
-        $('#preview').srcdoc = html;
-      } catch (error) {
-        $('#previewWrap').hidden = true;
-      }
+    if (state.formats.indexOf('dashboard') >= 0) {
+      renderDashboardPreview(doc);
+    } else if (state.formats.indexOf('qa') >= 0) {
+      renderQaPreview(doc);
     } else {
-      $('#previewWrap').hidden = true;
+      successCard(doc);
     }
+
+    $('#intake').style.display = 'none';
+    $('#dash').classList.add('show');
+    window.scrollTo(0, 0);
   }
 
   function restart() {
@@ -371,12 +496,81 @@
     state.objectUrls.forEach(URL.revokeObjectURL);
     state.objectUrls = [];
     $('#pasteBox').value = '';
-    $('#titleInput').value = '';
-    $('#preview').srcdoc = '';
-    $('#previewWrap').hidden = true;
+    $('#titleIn').value = '';
+    $('#charCount').textContent = '0 characters';
+    $('#qualityBadge').innerHTML = '';
     renderChips();
     clearStatus();
-    showIntake();
+    $('#dash').classList.remove('show');
+    $('#intake').style.display = 'flex';
+    showPane(0);
+  }
+
+  // ---------------------------------------------------------------- wizard
+  var PANES = [
+    { kicker: 'STEP 01', title: 'Add your input', next: 'Choose format' },
+    { kicker: 'STEP 02', title: 'Choose output format', next: 'Title & audience' },
+    { kicker: 'STEP 03', title: 'Title & audience', next: 'Review & generate' },
+    { kicker: 'STEP 04', title: 'Review & generate', next: '' }
+  ];
+
+  function hasInput() {
+    return state.files.length > 0 || $('#pasteBox').value.trim().length > 0;
+  }
+  function hasFormat() { return state.formats.length > 0; }
+  function srcSummary() {
+    var bits = [];
+    if (state.files.length) { bits.push(state.files.length + (state.files.length === 1 ? ' document' : ' documents')); }
+    var pasted = $('#pasteBox').value.trim();
+    if (pasted) { bits.push(pasted.length.toLocaleString() + ' pasted characters'); }
+    return bits.length ? bits.join(' + ') : 'Nothing added yet';
+  }
+  function fmtLabels() {
+    return Array.prototype.slice.call(document.querySelectorAll('.fmt.active .fmt-label')).map(function (e) { return e.textContent; });
+  }
+  function updateReadyState() {
+    var hi = hasInput(), hf = hasFormat(), ready = hi && hf;
+    var doneCount = [hi, hf, ready].filter(Boolean).length;
+    $('#readyPill').textContent = ready ? 'Ready to generate' : hi ? 'Pick an output format' : 'Waiting for input';
+    $('#progressFill').style.width = Math.round((doneCount / 3) * 100) + '%';
+    Array.prototype.forEach.call(document.querySelectorAll('.sb-item'), function (el) {
+      var step = +el.dataset.step;
+      var done = (step === 0 && hi) || (step === 1 && hf) || (step === 2 && hi && hf);
+      el.classList.toggle('done', done && step !== state.step);
+    });
+  }
+  function updateReview() {
+    $('#revSources').textContent = srcSummary();
+    var labels = fmtLabels();
+    $('#revFormats').textContent = labels.length ? labels.join(' \u00b7 ') : 'No format selected';
+    $('#revTitle').textContent = $('#titleIn').value.trim() || 'Untitled response';
+    var audienceEl = $('#audience');
+    $('#revAudience').textContent = audienceEl.options[audienceEl.selectedIndex].text;
+  }
+  function showPane(i) {
+    state.step = Math.max(0, Math.min(PANES.length - 1, i));
+    Array.prototype.forEach.call(document.querySelectorAll('.mpane'), function (p) {
+      p.classList.toggle('active', +p.dataset.pane === state.step);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.sb-item'), function (el) {
+      el.classList.toggle('active', +el.dataset.step === state.step);
+    });
+    $('#paneKicker').textContent = PANES[state.step].kicker;
+    $('#paneTitle').textContent = PANES[state.step].title;
+    $('#prevBtn').hidden = state.step === 0;
+    $('#nextBtn').hidden = state.step === PANES.length - 1;
+    if (PANES[state.step].next) { $('#nextBtn').innerHTML = escapeHtml(PANES[state.step].next) + ' &rsaquo;'; }
+    if (state.step === 3) { updateReview(); }
+    updateReadyState();
+    window.scrollTo(0, 0);
+  }
+  function wireWizard() {
+    Array.prototype.forEach.call(document.querySelectorAll('.sb-item'), function (el) {
+      el.addEventListener('click', function () { showPane(+el.dataset.step); });
+    });
+    $('#prevBtn').addEventListener('click', function () { showPane(state.step - 1); });
+    $('#nextBtn').addEventListener('click', function () { showPane(state.step + 1); });
+    $('#homeBtn').addEventListener('click', function () { showPane(0); });
   }
 
   // -------------------------------------------------------------------- boot
@@ -386,17 +580,29 @@
 
     wireDropzone();
     wireFormatPicker();
+    wireWizard();
     $('#generateBtn').addEventListener('click', generate);
-    $('#restartBtn').addEventListener('click', restart);
+    showPane(0);
 
     try {
       var configResponse = await fetch('/api/config', { credentials: 'same-origin' });
       state.config = await configResponse.json();
+      // Show the server's curated groups, not the alphabetically-first eight raw
+      // extensions - that listed things like .dotx and .log while omitting PDF
+      // and PowerPoint entirely.
+      if (state.config.accepted_display) {
+        $('#dzSub').textContent =
+          state.config.accepted_display.join('  \u00b7  ')
+          + '  \u2014 up to ' + state.config.max_files + ' files, '
+          + state.config.max_upload_mb + ' MB each';
+      }
+      // Keep the picker's filter in step with what the server actually accepts,
+      // so the hardcoded accept="" list cannot drift out of date again.
       if (state.config.accepted_extensions) {
-        $('#dropzoneSub').textContent =
-          state.config.accepted_extensions.slice(0, 8).join(' ')
-          + ' — or click to browse (up to ' + state.config.max_files + ' files, '
-          + state.config.max_upload_mb + ' MB each)';
+        var fileInput = $('#fileInput');
+        if (fileInput) {
+          fileInput.setAttribute('accept', state.config.accepted_extensions.join(','));
+        }
       }
     } catch (error) {
       state.config = null;
@@ -404,7 +610,7 @@
 
     var authMode = state.config ? state.config.auth_mode : 'disabled';
     if (authMode === 'disabled') {
-      showIntake();
+      showApp();
       return;
     }
 
@@ -414,7 +620,7 @@
       if (me.authenticated) {
         $('#who').innerHTML = escapeHtml((me.user && me.user.name) || 'Signed in')
           + '<br><a href="/auth/logout">Sign out</a>';
-        showIntake();
+        showApp();
       } else {
         showLogin();
       }
@@ -425,3 +631,4 @@
 
   document.addEventListener('DOMContentLoaded', boot);
 })();
+

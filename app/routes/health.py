@@ -12,6 +12,18 @@ from ..knowledge import get_knowledge_base
 
 router = APIRouter(tags=["meta"])
 
+# Human-readable groups, most common first. Kept in sync with
+# app.extract.SUPPORTED_EXTENSIONS by test_config_display_matches_supported.
+ACCEPTED_DISPLAY = [
+    "PDF",
+    "Word (.docx)",
+    "PowerPoint (.pptx)",
+    "Excel (.xlsx, .xls)",
+    "Images (.png, .jpg, .gif, .webp, .bmp)",
+    "Web pages (.html)",
+    "Text (.txt, .md, .csv, .tsv, .json)",
+]
+
 
 @router.get("/healthz", response_model=None)
 def healthz() -> dict:
@@ -44,4 +56,7 @@ def client_config() -> dict:
         "max_files": settings.max_files,
         "max_upload_mb": settings.max_upload_mb,
         "accepted_extensions": sorted(SUPPORTED_EXTENSIONS),
+        # Grouped for display. The UI used to show the alphabetically-first eight
+        # extensions, which told a user nothing useful.
+        "accepted_display": ACCEPTED_DISPLAY,
     }

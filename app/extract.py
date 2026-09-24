@@ -18,8 +18,10 @@ from typing import List, Sequence, Tuple
 
 from .config import get_settings
 from .document_sections import (
+    IMAGE_EXTENSIONS,
     ExtractionError,
     _decode,
+    extract_image_sections,
     extract_docx_sections,
     extract_html_sections,
     extract_pdf_sections,
@@ -39,6 +41,8 @@ PPT_EXTENSIONS = {".pptx", ".pptm", ".potx"}
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xltx"}
 LEGACY_EXCEL_EXTENSIONS = {".xls"}
 HTML_EXTENSIONS = {".html", ".htm"}
+# Charts, screenshots and scanned pages photographed as images. Read by the
+# same GPT-5.4 vision path the RAG ingestion pipeline already uses.
 
 SUPPORTED_EXTENSIONS = (
     TEXT_EXTENSIONS
@@ -50,6 +54,7 @@ SUPPORTED_EXTENSIONS = (
     | EXCEL_EXTENSIONS
     | LEGACY_EXCEL_EXTENSIONS
     | HTML_EXTENSIONS
+    | IMAGE_EXTENSIONS
 )
 
 # Legacy binary formats the modern parsers cannot open. (.xls is read by xlrd.)
@@ -127,6 +132,10 @@ def _extract_html(data: bytes) -> str:
     return _join_plain(extract_html_sections(data, get_settings()))
 
 
+def _extract_image(data: bytes) -> str:
+    return _join_plain(extract_image_sections(data, get_settings()))
+
+
 def _extract_csv(data: bytes, delimiter: str) -> str:
     text = _decode(data)
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
@@ -171,6 +180,14 @@ def extract_text(filename: str, data: bytes) -> ExtractedDocument:
         text = _extract_xls(data)
     elif suffix in HTML_EXTENSIONS:
         text = _extract_html(data)
+    elif suffix in IMAGE_EXTENSIONS:
+        text = _extract_image(data)
+        if not text.strip():
+            note = (
+                "Nothing could be read from this image. It may be decorative "
+                "(a logo or icon), unreadable, or image reading may be turned "
+                "off on the server. Describe it in the pasted text instead."
+            )
     elif suffix in CSV_EXTENSIONS:
         text = _extract_csv(data, "\t" if suffix == ".tsv" else ",")
     elif suffix in JSON_EXTENSIONS:
@@ -180,8 +197,8 @@ def extract_text(filename: str, data: bytes) -> ExtractedDocument:
     else:
         raise ExtractionError(
             f"Unsupported file type '{suffix}'. Supported: PDF, Word (.docx), "
-            "PowerPoint (.pptx), Excel (.xlsx/.xls), HTML, and "
-            "text/CSV/TSV/JSON/Markdown."
+            "PowerPoint (.pptx), Excel (.xlsx/.xls), HTML, images "
+            "(PNG/JPG/GIF/WebP/BMP), and text/CSV/TSV/JSON/Markdown."
         )
 
     text = _clean(text)

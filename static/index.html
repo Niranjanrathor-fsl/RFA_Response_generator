@@ -9,125 +9,179 @@
 </head>
 <body>
 
-<header class="app-header">
-  <div>
-    <h1>RFP Response Generator</h1>
-    <p>Intelligence that Operates &mdash; on-brand responses from the Firstsource knowledge base</p>
-  </div>
-  <div class="header-right">
-    <div class="who" id="who"></div>
-    <img src="/static/logos/Firstsource-logo-white.png" alt="Firstsource">
-  </div>
-</header>
+<!-- Sign-in prompt, shown only when SSO is enabled and the user is signed out -->
+<section class="login-card" id="loginCard" hidden>
+  <img src="/static/logos/Firstsource-logo-standalone.png" alt="Firstsource">
+  <h2>Sign in to continue</h2>
+  <p>This application is restricted to Firstsource staff. Sign in with your work account.</p>
+  <a class="btn" id="loginBtn" href="/auth/login">Sign in with SSO</a>
+</section>
 
-<main class="stage">
+<div class="app" id="app" hidden>
 
-  <!-- Sign-in prompt, shown only when SSO is enabled and the user is signed out -->
-  <section class="login-card" id="loginCard" hidden>
-    <img src="/static/logos/Firstsource-logo-standalone.png" alt="Firstsource">
-    <h2>Sign in to continue</h2>
-    <p>This application is restricted to Firstsource staff. Sign in with your work account.</p>
-    <a class="btn" id="loginBtn" href="/auth/login">Sign in with SSO</a>
-  </section>
-
-  <!-- Intake -->
-  <section id="intake" hidden>
-    <p class="lead">
-      Pick your output format(s), add <b>one or more files</b> (or paste content below), then click
-      <b>Generate</b>. Reads <b>PDF, Word, PowerPoint, Excel</b> and text/CSV/JSON. If the content is an
-      <b>RFI or list of questions</b>, each one is answered from the Firstsource knowledge base held on
-      this server. Multiple documents are merged into a single response, with answers attributed to the
-      document they came from.
-    </p>
-
-    <label class="field-label">Output <span class="hint-inline">(pick one or more)</span></label>
-    <div class="fmts" id="fmts">
-      <button type="button" class="fmt active" data-fmt="dashboard">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-        <span>Interactive Dashboard</span>
-      </button>
-      <button type="button" class="fmt" data-fmt="qa">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        <span>Response to Questions</span>
-      </button>
-      <button type="button" class="fmt" data-fmt="docx">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6"/></svg>
-        <span>Word</span>
-      </button>
-      <button type="button" class="fmt" data-fmt="pptx">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1"/><path d="M12 16v4M8 20h8"/></svg>
-        <span>PowerPoint</span>
-      </button>
-      <button type="button" class="fmt" data-fmt="xlsx">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
-        <span>Excel</span>
-      </button>
+  <aside class="sidebar">
+    <div class="sb-brand">
+      <img id="hdrLogo" src="/static/logos/Firstsource-logo-white.png" alt="Firstsource" class="sb-logo">
+      <div class="sb-title">RFP Response Generator</div>
+      <div class="sb-tag">Intelligence that Operates</div>
     </div>
 
-    <div class="row">
-      <div class="dropzone" id="dropzone" tabindex="0" role="button"
-           aria-label="Add documents">
-        <div class="icon">&#11014;</div>
-        <div class="big">Drag &amp; drop one or more documents</div>
-        <div class="sub" id="dropzoneSub">.pdf .docx .pptx .xlsx .txt .md .csv .json &mdash; or click to browse</div>
-        <input type="file" id="fileInput" multiple hidden
-               accept=".pdf,.docx,.docm,.dotx,.pptx,.pptm,.potx,.xlsx,.xlsm,.xltx,.txt,.md,.markdown,.csv,.tsv,.json">
+    <div class="sb-navlabel">Workflow</div>
+    <div class="sb-nav" id="sbNav">
+      <div class="sb-item" data-step="0">
+        <span class="sb-dot">01</span>
+        <span class="sb-text"><span class="sb-label">Add your input</span><span class="sb-sub">Upload or paste</span></span>
+        <span class="sb-chev">&rsaquo;</span>
       </div>
-      <button class="btn" id="generateBtn" type="button">Generate</button>
-    </div>
-
-    <div class="chips" id="chips"></div>
-
-    <div class="divider">OR PASTE CONTENT</div>
-    <textarea id="pasteBox" placeholder="Paste an RFI, a list of questions, notes, a transcript, a data table&hellip;"></textarea>
-
-    <div class="controls">
-      <label>Title
-        <input type="text" id="titleInput" placeholder="(optional) e.g. Acme Bank RFI Response">
-      </label>
-      <label>Audience
-        <select id="audience">
-          <option value="business">Business (SVP/VP, sales, solutioning)</option>
-          <option value="technical">Technical (architects / engineering)</option>
-        </select>
-      </label>
-    </div>
-
-    <p class="hint">
-      Content is sent to this server, which calls the Anthropic API using the company API key.
-      The Firstsource knowledge base stays on the server. Nothing is stored after your download.
-    </p>
-
-    <div class="status" id="status" role="status" aria-live="polite"></div>
-  </section>
-
-  <!-- Results -->
-  <section class="results" id="results">
-    <div class="result-head">
-      <div>
-        <h2 id="resultTitle"></h2>
-        <p id="resultSubtitle"></p>
-        <div class="badges" id="resultBadges"></div>
+      <div class="sb-item" data-step="1">
+        <span class="sb-dot">02</span>
+        <span class="sb-text"><span class="sb-label">Choose format</span><span class="sb-sub">One or more outputs</span></span>
+        <span class="sb-chev">&rsaquo;</span>
       </div>
-      <button class="btn ghost" id="restartBtn" type="button">Build another</button>
+      <div class="sb-item" data-step="2">
+        <span class="sb-dot">03</span>
+        <span class="sb-text"><span class="sb-label">Title &amp; audience</span><span class="sb-sub">Frame the response</span></span>
+        <span class="sb-chev">&rsaquo;</span>
+      </div>
+      <div class="sb-item" data-step="3">
+        <span class="sb-dot">04</span>
+        <span class="sb-text"><span class="sb-label">Review &amp; generate</span><span class="sb-sub">Confirm and run</span></span>
+        <span class="sb-chev">&rsaquo;</span>
+      </div>
     </div>
-    <div class="downloads" id="downloads">
-      <span class="label">Download:</span>
-    </div>
-    <div id="resultNotices"></div>
-    <div class="preview" id="previewWrap" hidden>
-      <label class="field-label">Dashboard preview</label>
-      <iframe id="preview" title="Dashboard preview" sandbox="allow-same-origin"></iframe>
-    </div>
-  </section>
 
-</main>
+    <div class="sb-foot">
+      <div class="who" id="who"></div>
+      <div class="priv">Content is sent to this server, which calls Azure OpenAI using the company API key. Nothing is stored after your download.</div>
+      <div class="cr" id="footerCopyright"></div>
+    </div>
+  </aside>
 
-<footer class="app-footer">
-  <span id="footerCopyright"></span>
-  <span class="tag">We make it happen!</span>
-</footer>
+  <main class="main">
+    <div id="intake" style="display:flex;flex-direction:column;flex:1;">
+      <header class="mheader">
+        <div>
+          <div class="kicker" id="paneKicker">STEP 01</div>
+          <h2 id="paneTitle">Add your input</h2>
+        </div>
+        <div class="mheader-right">
+          <button type="button" class="home-btn" id="homeBtn" title="Back to Add your input" aria-label="Home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg><span>Home</span></button>
+          <div class="ready-pill" id="readyPill">Waiting for input</div>
+          <div class="progress-track"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+        </div>
+      </header>
+
+      <div class="mbody">
+
+        <!-- ===================== PANE 1: INPUT ===================== -->
+        <section class="mpane active" data-pane="0">
+          <p class="desc">Multiple documents merge into a single response with per-source attribution. Reads Word, PowerPoint, Excel, PDF, web pages and plain text &mdash; plus images and scanned PDFs, where charts and screenshots are read for you.</p>
+
+          <div class="o2-dz" id="dz" tabindex="0" role="button" aria-label="Add documents">
+            <div class="big">Drag &amp; drop one or more documents</div>
+            <div class="sub" id="dzSub">PDF &middot; Word &middot; PowerPoint &middot; Excel &middot; Images &middot; Web pages &middot; Text</div>
+            <span class="o2-browse"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="M7 8l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg><span>Browse files</span></span>
+            <input type="file" id="fileInput" multiple hidden
+                   accept=".pdf,.docx,.docm,.dotx,.pptx,.pptm,.potx,.xlsx,.xlsm,.xltx,.xls,.html,.htm,.png,.jpg,.jpeg,.gif,.webp,.bmp,.txt,.md,.markdown,.csv,.tsv,.json,.log,.rst,.text">
+          </div>
+          <div class="o2-chips" id="chips"></div>
+
+          <div class="or-divider"><span class="ln"></span><span>OR PASTE</span><span class="ln"></span></div>
+
+          <div>
+            <textarea class="o2-ta" id="pasteBox" placeholder="Paste an RFI, questions, notes, a transcript, a data table&hellip;"></textarea>
+            <div class="o2-cc"><span>An RFI or question list is answered question-by-question from the Firstsource knowledge base held on this server.</span><span id="charCount">0 characters</span></div>
+          </div>
+        </section>
+
+        <!-- ===================== PANE 2: FORMAT ===================== -->
+        <section class="mpane" data-pane="1">
+          <p class="desc">Pick one or more deliverables. Each is generated on-brand from the same merged source set.</p>
+          <div class="fmts" id="fmts">
+            <button type="button" class="fmt active" data-fmt="dashboard">
+              <span class="fmt-badge"><span class="fold" style="background:#6CB1DB"></span><span class="lines"><div></div><div style="width:72%"></div><div style="width:86%"></div></span><span class="ext" style="background:#113190">HTML</span></span>
+              <span class="fmt-txt"><span class="fmt-label">Interactive Dashboard</span><span class="fmt-sub">Executive HTML view, charts and drill-down</span></span>
+              <span class="fmt-dot"></span>
+            </button>
+            <button type="button" class="fmt" data-fmt="qa">
+              <span class="fmt-badge"><span class="fold" style="background:#6CB1DB"></span><span class="lines"><div></div><div style="width:72%"></div><div style="width:86%"></div></span><span class="ext" style="background:#1E2247">Q&amp;A</span></span>
+              <span class="fmt-txt"><span class="fmt-label">Response to Questions</span><span class="fmt-sub">Question-by-question, original numbering</span></span>
+              <span class="fmt-dot"></span>
+            </button>
+            <button type="button" class="fmt" data-fmt="docx">
+              <span class="fmt-badge"><span class="fold" style="background:#6CB1DB"></span><span class="lines"><div></div><div style="width:72%"></div><div style="width:86%"></div></span><span class="ext" style="background:#2844C4">DOCX</span></span>
+              <span class="fmt-txt"><span class="fmt-label">Word</span><span class="fmt-sub">Formatted .docx response document</span></span>
+              <span class="fmt-dot"></span>
+            </button>
+            <button type="button" class="fmt" data-fmt="pptx">
+              <span class="fmt-badge"><span class="fold" style="background:#6CB1DB"></span><span class="lines"><div></div><div style="width:72%"></div><div style="width:86%"></div></span><span class="ext" style="background:#DF6014">PPTX</span></span>
+              <span class="fmt-txt"><span class="fmt-label">PowerPoint</span><span class="fmt-sub">On-brand slides for the readout</span></span>
+              <span class="fmt-dot"></span>
+            </button>
+            <button type="button" class="fmt" data-fmt="xlsx">
+              <span class="fmt-badge"><span class="fold" style="background:#6CB1DB"></span><span class="lines"><div></div><div style="width:72%"></div><div style="width:86%"></div></span><span class="ext" style="background:#6CB1DB;color:#1E2247">XLSX</span></span>
+              <span class="fmt-txt"><span class="fmt-label">Excel</span><span class="fmt-sub">Structured answer matrix</span></span>
+              <span class="fmt-dot"></span>
+            </button>
+          </div>
+        </section>
+
+        <!-- ===================== PANE 3: DETAILS ===================== -->
+        <section class="mpane" data-pane="2">
+          <div class="details-grid">
+            <label class="dfield">
+              <span class="flbl">Title <span class="opt">optional</span></span>
+              <input type="text" id="titleIn" placeholder="Give this response a title">
+            </label>
+            <label class="dfield">
+              <span class="flbl">Audience</span>
+              <select id="audience">
+                <option value="business">Business &mdash; SVP/VP, sales, solutioning</option>
+                <option value="technical">Technical &mdash; architects and engineering</option>
+                <option value="analyst">Analyst &mdash; Everest, HFS, ISG</option>
+              </select>
+            </label>
+            <div class="dnote">Audience sets the register and depth of every answer &mdash; the same sources, framed for the people reading them.</div>
+          </div>
+        </section>
+
+        <!-- ===================== PANE 4: REVIEW ===================== -->
+        <section class="mpane" data-pane="3">
+          <div class="rev-grid">
+            <div class="rev-k">Sources</div><div class="rev-v" id="revSources">Nothing added yet</div>
+            <div class="rev-k">Formats</div><div class="rev-v" id="revFormats">Interactive Dashboard</div>
+            <div class="rev-k">Title</div><div class="rev-v" id="revTitle">Untitled response</div>
+            <div class="rev-k">Audience</div><div class="rev-v" id="revAudience">Business &mdash; SVP/VP, sales, solutioning</div>
+          </div>
+          <div class="rev-cta">
+            <button class="btn" id="generateBtn"><svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M12 2l1.9 5.6a3 3 0 0 0 1.9 1.9L21.4 11l-5.6 1.9a3 3 0 0 0-1.9 1.9L12 20.4l-1.9-5.6a3 3 0 0 0-1.9-1.9L2.6 11l5.6-1.9a3 3 0 0 0 1.9-1.9L12 2z"/></svg><span>Generate</span></button>
+            <div class="rev-hint">Merges every source, flags conflicts, and applies Firstsource brand styling.</div>
+          </div>
+        </section>
+
+        <div id="status" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="mbody" style="padding-top:0;flex:0;">
+        <div class="mfoot">
+          <div class="navbtn back" id="prevBtn">&lsaquo; Back</div>
+          <div class="navbtn next" id="nextBtn">Choose format &rsaquo;</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="dash">
+      <div class="mbody">
+        <div id="qualityBadge"></div>
+        <div class="dash-actions" id="dashActions"></div>
+        <div id="resultNotices"></div>
+        <div class="dashboard" id="dashboard"></div>
+      </div>
+    </div>
+  </main>
+</div>
 
 <script src="/static/js/app.js"></script>
 </body>
 </html>
+
