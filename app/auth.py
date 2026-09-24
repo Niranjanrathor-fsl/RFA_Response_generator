@@ -4,6 +4,9 @@ Two modes, chosen with the AUTH_MODE environment variable:
 
 * ``disabled`` - no login. Only appropriate when the app is reachable solely from
   the internal network or VPN.
+* ``password`` - username and password, checked against a JSON file of salted
+  scrypt hashes on the server (see app/users.py). For deployments where no
+  identity provider is available.
 * ``oidc`` - OpenID Connect. Wired for Azure AD (Microsoft Entra ID) but works with
   any compliant provider. Your engineering team supplies the discovery URL, client
   ID and client secret; no code changes required.

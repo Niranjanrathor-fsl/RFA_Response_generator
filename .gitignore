@@ -14,3 +14,4 @@ build/
 deploy.zip
 .DS_Store
 *.log
+users.json
