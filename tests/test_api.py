@@ -135,6 +135,34 @@ def test_single_source_prompt_has_no_multi_document_section(client, stub_llm):
     assert "SOURCE DOCUMENT 1 of" not in stub_llm.last_user_prompt
 
 
+def test_every_detected_question_is_searched_separately(client, stub_llm, monkeypatch):
+    searched = []
+
+    def fake_per_question(questions, settings=None):
+        searched.extend(questions)
+        return [(q, []) for q in questions]
+
+    monkeypatch.setattr(generate_route, "search_per_question", fake_per_question)
+    # Past the old 8,000-character single-query window.
+    filler = "Background context about the programme. " * 250
+    client.post("/api/generate", data={
+        "pasted": f"Q1. Describe your governance model.\n{filler}\nQ2. What is your headcount?"
+    })
+
+    assert searched == ["Describe your governance model.", "What is your headcount?"]
+
+
+def test_input_without_questions_falls_back_to_one_search(client, stub_llm, monkeypatch):
+    single = []
+    monkeypatch.setattr(generate_route, "search_per_question",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("not expected")))
+    monkeypatch.setattr(generate_route, "rag_search", lambda q, *a: single.append(q) or [])
+
+    client.post("/api/generate", data={"pasted": "Firstsource delivers intelligent operations."})
+
+    assert single == ["Firstsource delivers intelligent operations."]
+
+
 def test_knowledge_base_is_injected_server_side(client, stub_llm):
     client.post("/api/generate", data={"pasted": "Q1. Anything?"})
     system_prompt = stub_llm.last_system_prompt

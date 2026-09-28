@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     # "local"     -> read documents from rag_local_source_dir (no Azure AD needed, for testing)
     # "sharepoint" -> read documents from Microsoft Graph
     rag_source: Literal["local", "sharepoint"] = "local"
-    rag_local_source_dir: str = "knowledge/rag_sample_docs"
+    rag_local_source_dir: str = "knowledge/local_docs"
 
     # Microsoft Graph app-only auth (client credentials flow)
     ms_tenant_id: str = ""
@@ -86,6 +86,19 @@ class Settings(BaseSettings):
     # Drop any chunk trailing more than this far behind the best match for the
     # query, in addition to the top_k cap - keeps context tight even within top_k.
     rag_rerank_score_margin: float = 6.0
+    # Drop a retrieved chunk whose text is at least this similar (0-1) to one
+    # already selected - sibling drafts of the same document otherwise fill the
+    # results with copies. 1.0 disables it. See retrieve._drop_near_duplicates.
+    rag_near_duplicate_threshold: float = 0.8
+    # Per-question retrieval for uploaded RFIs (see app/questions.py): each detected
+    # question gets its own search, keeping fewer chunks than a standalone search so
+    # a long questionnaire does not flood the prompt.
+    rag_max_questions: int = 60
+    rag_per_question_top_k: int = 8
+    rag_question_search_workers: int = 4
+    # One LLM call per upload rewrites each detected question into a standalone
+    # search query (see app/questions.understand_questions). Off -> raw question text.
+    rag_query_understanding_enabled: bool = True
 
     # ------------------------------------------------- Phase 4: multi-vector
     # Decouples the vector used for MATCHING from the chunk text passed to the
@@ -132,6 +145,10 @@ class Settings(BaseSettings):
     # SharePoint accumulates "file (1).pdf" copies. Index identical content once so
     # the retriever cannot see the same evidence twice and over-weight it.
     rag_skip_duplicate_content: bool = True
+    # A full sync removes documents the source no longer lists, but refuses when
+    # more than this fraction would go at once - that looks like a permissions or
+    # folder-path problem, not people deleting files.
+    rag_sync_orphan_sweep_max_fraction: float = 0.5
 
     # ------------------------------------------------- Phase 2: PostgreSQL
     # Metadata (documents, ingestion runs) + DeepEval scorecards. Independent

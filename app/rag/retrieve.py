@@ -14,11 +14,15 @@ filtered to that document's chunks (see _match_known_source).
 
 from __future__ import annotations
 
+import difflib
 import logging
+import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from qdrant_client import models
 
@@ -40,11 +44,21 @@ class RetrievedChunk:
     item_id: str = ""
 
 
+_reranker_lock = threading.Lock()
+
+
 @lru_cache
-def _reranker():
+def _load_reranker():
     from fastembed.rerank.cross_encoder import TextCrossEncoder
 
     return TextCrossEncoder(model_name="BAAI/bge-reranker-base")
+
+
+def _reranker():
+    # Per-question searches run in parallel; without the lock each thread's first
+    # call would load its own copy of the model.
+    with _reranker_lock:
+        return _load_reranker()
 
 
 def _match_known_source(query: str, settings: Settings) -> Optional[str]:
@@ -58,6 +72,36 @@ def _match_known_source(query: str, settings: Settings) -> Optional[str]:
         if len(stem) >= 6 and stem in query_lower:
             return name
     return None
+
+
+def _normalise(text: str) -> str:
+    # A deck and its PDF export differ in case, bullets and line breaks, not words.
+    return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
+
+
+def _drop_near_duplicates(ranked: list, top_k: int, threshold: float) -> list:
+    """Take the best-ranked chunks, skipping any whose text closely matches one
+    already taken, until ``top_k`` are chosen.
+
+    The corpus holds several drafts of the same document (v1/v2 workbooks, a deck
+    and its PDF), whose passages content-hash dedup cannot catch because the files
+    differ. Measured on failing eval questions, a quarter of retrieved passages
+    were copies. Real copies scored >= 0.81 similar; the most similar distinct
+    passages 0.67. A threshold of 1.0 or more disables suppression.
+    """
+    kept: list = []
+    kept_texts: List[str] = []
+    for item in ranked:
+        if len(kept) >= top_k:
+            break
+        text = _normalise(item[1][0])
+        if threshold < 1.0 and any(
+            difflib.SequenceMatcher(None, text, other).ratio() >= threshold for other in kept_texts
+        ):
+            continue
+        kept.append(item)
+        kept_texts.append(text)
+    return kept
 
 
 def search(query: str, settings: Settings | None = None) -> List[RetrievedChunk]:
@@ -149,7 +193,7 @@ def _search_uncached(query: str, settings: Settings) -> List[RetrievedChunk]:
         scores = list(_reranker().rerank(query, pairs_texts))
 
         ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
-        top = ranked[: settings.rag_rerank_top_k]
+        top = _drop_near_duplicates(ranked, settings.rag_rerank_top_k, settings.rag_near_duplicate_threshold)
         # Trim the tail: even within top_k, drop chunks trailing far behind the
         # best match for this query - keeps context tight instead of padding out
         # to a fixed count with weakly-relevant chunks (calibrated against real
@@ -176,6 +220,45 @@ def _search_uncached(query: str, settings: Settings) -> List[RetrievedChunk]:
             type(exc).__name__, exc,
         )
         return []
+
+
+def search_per_question(
+    questions: List[str], settings: Settings | None = None
+) -> List[Tuple[str, List[RetrievedChunk]]]:
+    """One search per question, in parallel, each keeping fewer chunks than a
+    standalone search so a 40-question RFI does not flood the prompt."""
+    settings = settings or get_settings()
+    per_question = settings.model_copy(update={"rag_rerank_top_k": settings.rag_per_question_top_k})
+    workers = max(1, min(settings.rag_question_search_workers, len(questions) or 1))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(lambda q: search(q, per_question), questions))
+    return list(zip(questions, results))
+
+
+def format_question_grounding(results: List[Tuple[str, List[RetrievedChunk]]]) -> str:
+    """Render per-question retrieval so the model knows which evidence belongs to
+    which question. A passage retrieved for several questions is printed once."""
+    if not any(chunks for _, chunks in results):
+        return ""
+    lines = [
+        "===== SHAREPOINT ANALYST DOCUMENTS (retrieved per question, cite by source) =====",
+        "Each question below is followed by the passages retrieved for it. Answer each "
+        "question from its own passages first; use the others only if they genuinely apply.",
+    ]
+    shown = set()
+    for question, chunks in results:
+        lines.append(f"\n--- Evidence for: {question} ---")
+        if not chunks:
+            lines.append("(no matching passages found in the SharePoint documents)")
+        for chunk in chunks:
+            location = f", {chunk.location}" if chunk.location else ""
+            key = (chunk.source, chunk.location, chunk.text)
+            if key in shown:
+                lines.append(f"[Source: {chunk.source}{location}] - see passage above")
+                continue
+            shown.add(key)
+            lines.append(f"[Source: {chunk.source}{location}]\n{chunk.text}")
+    return "\n".join(lines)
 
 
 def format_grounding_block(chunks: List[RetrievedChunk]) -> str:

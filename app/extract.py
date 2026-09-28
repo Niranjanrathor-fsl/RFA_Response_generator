@@ -109,7 +109,8 @@ def _join_with_markers(sections: List[Tuple[str, str]]) -> str:
 
 
 def _extract_pdf(data: bytes) -> str:
-    return _join_plain(extract_pdf_sections(data, get_settings()))
+    # Page markers let detected questions be tagged with their page.
+    return _join_with_markers(extract_pdf_sections(data, get_settings()))
 
 
 def _extract_docx(data: bytes) -> str:

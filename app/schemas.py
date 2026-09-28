@@ -17,6 +17,7 @@ ICON_KEYWORDS = {
 
 OutputFormat = Literal["dashboard", "qa", "docx", "pptx", "xlsx"]
 Mode = Literal["rfi", "summary"]
+QualityFlag = Literal["green", "amber", "red"]
 
 
 class Metric(BaseModel):
@@ -154,6 +155,18 @@ class ResponseDocument(BaseModel):
         return "rfi" if self.question_count else "summary"
 
 
+class QualityAssessment(BaseModel):
+    """Live per-response groundedness self-check (separate from the offline
+    DeepEval harness in tests/eval/) - a single fast LLM call so the UI can show
+    an immediate green/amber/red signal right after generation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    score: int = Field(ge=0, le=100)
+    flag: QualityFlag
+    reason: str = ""
+
+
 class GenerateResult(BaseModel):
     """What POST /api/generate hands back to the browser."""
 
@@ -164,6 +177,7 @@ class GenerateResult(BaseModel):
     model: str
     corpus_chars: int
     truncated: bool = False
+    quality: Optional[QualityAssessment] = None
 
 
 class RenderRequest(BaseModel):

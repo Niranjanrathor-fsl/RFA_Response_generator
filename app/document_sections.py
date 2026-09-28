@@ -420,6 +420,11 @@ def extract_xls_sections(data: bytes, settings: Settings) -> List[Tuple[str, str
     modern .xlsx extractor so both look identical to the chunker."""
     import xlrd
 
+    # A modern workbook saved under a legacy name (e.g. "Forrester responses.XLS")
+    # is a zip archive, which xlrd refuses outright. Route it to the .xlsx reader.
+    if data[:4] == b"PK\x03\x04":
+        return extract_xlsx_sections(data, settings)
+
     book = xlrd.open_workbook(file_contents=data)
     sections: List[Tuple[str, str]] = []
     for sheet in book.sheets():

@@ -44,13 +44,16 @@ def _tick(
             trigger="reconcile" if due_for_full else "scheduled",
         )
         failed = bool(getattr(report, "error", ""))
+        # Locked out by another sync: nothing ran, so a due reconcile is still due.
+        not_run = bool(getattr(report, "skipped", False))
         if failed:
             log.warning("Scheduled sync reported a failure: %s", report.error)
     except Exception as exc:  # noqa: BLE001 - belt and braces; the loop must survive
         log.warning("Scheduled sync raised, continuing: %s: %s", type(exc).__name__, exc)
         failed = True
+        not_run = False
 
-    if due_for_full and not failed:
+    if due_for_full and not failed and not not_run:
         return now
     return last_full
 

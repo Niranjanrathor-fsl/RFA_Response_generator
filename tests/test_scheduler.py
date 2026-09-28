@@ -101,3 +101,20 @@ def test_scheduler_refuses_sharepoint_sync_without_postgres(caplog):
         _settings(rag_source="sharepoint", pg_enabled=False)
     )
     assert scheduler_module._task is None
+
+
+def test_a_reconcile_skipped_for_the_lock_is_retried(monkeypatch):
+    """When another sync (e.g. a manual ingest) holds the lock, the scheduled
+    reconcile does nothing. It must not count as done, or the next full
+    check - and its sweep of deleted files - waits a whole day."""
+    from app.rag.sync import SyncReport
+
+    calls = []
+
+    def locked_out(settings, full=False, trigger="scheduled"):
+        calls.append((full, trigger))
+        return SyncReport(skipped=True)
+
+    monkeypatch.setattr(scheduler_module, "sync_once", locked_out)
+    scheduler_module.run_ticks(_settings(), ticks=2, clock=_clock())
+    assert calls == [(True, "reconcile"), (True, "reconcile")]

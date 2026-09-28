@@ -14,16 +14,22 @@ lookup time, if ANY of those documents' content hash has changed since the entry
 was cached (per the `documents` table Phase 2 already tracks), the entry is treated
 as stale and skipped - this is a correctness-preserving cache, not just a TTL cache.
 A TTL is also enforced as a simpler secondary safety net.
+
+Each entry also carries a signature of the whole indexed document set and of the
+retrieval settings. The per-document check alone missed two cases: newly ingested
+documents (which could answer the query better) and retrieval changes such as
+top_k or near-duplicate suppression. Either now makes every entry a miss.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from qdrant_client import QdrantClient, models
 
@@ -36,6 +42,23 @@ log = logging.getLogger(__name__)
 
 CACHE_VECTOR_NAME = "query_dense"
 _ID_NAMESPACE = uuid.UUID("2b1a7e3c-4b5e-4a3f-9d5a-7d8f6a2b9c11")
+
+
+def _retrieval_signature(settings: Settings, states: Dict[str, store.DocumentState]) -> str:
+    """Changes whenever the indexed corpus or the way results are selected changes."""
+    indexed = sorted(
+        f"{item_id}:{state.content_tag}"
+        for item_id, state in states.items()
+        if state.sync_status == "ok"
+    )
+    knobs = [
+        settings.qdrant_collection_v2,
+        settings.rag_retrieve_top_k,
+        settings.rag_rerank_top_k,
+        settings.rag_rerank_score_margin,
+        settings.rag_near_duplicate_threshold,
+    ]
+    return hashlib.sha256(json.dumps([knobs, indexed]).encode("utf-8")).hexdigest()
 
 
 def _client(settings: Settings) -> QdrantClient:
@@ -62,11 +85,18 @@ def lookup(query: str, settings: Settings | None = None) -> Optional[List[Retrie
         client = _client(settings)
         if not client.collection_exists(settings.qdrant_cache_collection):
             return None
+        current_states = store.get_document_states(settings)
+        signature = _retrieval_signature(settings, current_states)
         query_vec = DenseEmbedder(settings).embed_one(query)
+        # Only entries written under the current index and settings are candidates,
+        # so an outdated entry can never shadow a valid one for the same query.
         results = client.query_points(
             collection_name=settings.qdrant_cache_collection,
             query=query_vec,
             using=CACHE_VECTOR_NAME,
+            query_filter=models.Filter(must=[
+                models.FieldCondition(key="signature", match=models.MatchValue(value=signature)),
+            ]),
             limit=1,
             with_payload=True,
         ).points
@@ -80,8 +110,11 @@ def lookup(query: str, settings: Settings | None = None) -> Optional[List[Retrie
             log.info("Semantic cache entry expired (TTL), treating as a miss.")
             return None
 
+        if payload.get("signature") != signature:
+            log.info("Semantic cache entry predates an index or retrieval change, treating as a miss.")
+            return None
+
         cached_sources: dict = payload.get("source_hashes", {})
-        current_states = store.get_document_states(settings)
         for item_id, cached_tag in cached_sources.items():
             state = current_states.get(item_id)
             if state is None or state.content_tag != cached_tag:
@@ -119,9 +152,13 @@ def store_result(query: str, chunks: List[RetrievedChunk], settings: Settings | 
             if item_id in current_states
         }
 
-        cache_id = str(uuid.uuid5(_ID_NAMESPACE, query))
+        # Keyed on the settings too: a per-question search keeps fewer chunks than
+        # a standalone one, so the two must not overwrite each other's entry.
+        signature = _retrieval_signature(settings, current_states)
+        cache_id = str(uuid.uuid5(_ID_NAMESPACE, f"{query}::{signature}"))
         payload = {
             "cache_id": cache_id,
+            "signature": signature,
             "query_text": query,
             "cached_at": datetime.now(timezone.utc).isoformat(),
             "source_hashes": source_hashes,
