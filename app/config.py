@@ -199,6 +199,9 @@ class Settings(BaseSettings):
     # --------------------------------------------------------------- misc
     cors_allow_origins: str = ""
     embed_fonts_in_html: bool = True
+    # Where background generation jobs keep their state (see app/jobs.py).
+    # Empty = the system temp directory.
+    job_dir: str = ""
 
     @field_validator("log_level")
     @classmethod
