@@ -24,7 +24,15 @@ KAIROS_RULES = """Firstsource terminology rules for every word you produce:
   "Intelligence that Operates" for the promise. Never print a deprecated term.
 - Never invent statistics. Use the figures in the knowledge base; if no figure fits,
   answer qualitatively from Kairos positioning rather than inventing a number.
-- Keep the register business-appropriate unless the audience is technical."""
+- Match the register to the stated audience: business audience -> outcome and value
+  language for SVP/VP, sales and solutioning readers; technical audience -> add
+  architecture, security, integration and implementation depth for architects and
+  engineers; analyst audience -> write like a submission to an industry analyst firm
+  (for example, but not limited to, Everest Group, HFS Research, ISG, Gartner - use
+  whichever specific firms the source material or knowledge base actually names) -
+  lead with evidence, benchmarks and named metrics over marketing claims, be explicit
+  about methodology/data sources behind each figure, and compare positioning to the
+  broader market/peers where the knowledge base supports it."""
 
 STRUCTURE_RULES = """Return ONLY a single JSON object - no markdown fences, no commentary
 before or after. Shape:
@@ -117,6 +125,7 @@ def build_user_prompt(
     corpus: str,
     source_names: Sequence[str],
     title_hint: str = "",
+    grounding_block: str = "",
 ) -> str:
     parts: List[str] = []
     multi = multi_document_rules(source_names)
@@ -126,5 +135,12 @@ def build_user_prompt(
     parts.append(STRUCTURE_RULES)
     if title_hint:
         parts.append(f'Use this exact title unless it is clearly wrong: "{title_hint}".')
+    if grounding_block:
+        parts.append(
+            "The following analyst documents were retrieved from SharePoint because they "
+            "are relevant to this request. Use them to ground and cite specific facts "
+            "(name the source document) in addition to the knowledge base above."
+        )
+        parts.append(grounding_block)
     parts.append('SOURCE CONTENT:\n"""\n' + corpus + '\n"""')
     return "\n\n".join(parts)

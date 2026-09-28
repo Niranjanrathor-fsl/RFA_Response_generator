@@ -36,6 +36,8 @@ class SyncReport:
     duplicates_skipped: int = 0
     chunks_indexed: int = 0
     error: str = ""
+    # True when another instance held the lock and this run did nothing.
+    skipped: bool = False
 
     def summary(self) -> str:
         return (
@@ -77,6 +79,7 @@ def sync_once(
     with store.advisory_lock(settings) as acquired:
         if not acquired:
             log.info("Another instance is already syncing; skipping this run.")
+            report.skipped = True
             return report
 
         store.ensure_schema(settings)
@@ -106,6 +109,11 @@ def sync_once(
                 index.delete_document(client, collection, deletion.item_id)
                 store.mark_document_deleted(deletion.item_id, settings)
                 report.documents_deleted += 1
+
+            # Any listing that did not start from a saved token is complete: a --full run,
+            # a rejected token, or no token saved yet.
+            if full or batch.resynced or delta_link is None:
+                report.documents_deleted += _sweep_orphans(batch, client, collection, source_key, settings)
 
             states = store.get_document_states(settings)
             hash_owners = store.get_content_hash_owners(settings)
@@ -189,6 +197,39 @@ def sync_once(
 
     log.info("Sync complete: %s.", report.summary())
     return report
+
+
+def _sweep_orphans(batch, client, collection: str, source_key: str, settings: Settings) -> int:
+    """After a FULL enumeration, remove every document we hold that the listing no
+    longer contains. Graph's delta reports a deletion only relative to a saved
+    token, so without this a file deleted while no token existed - or a file
+    inside a deleted folder - would stay in the index for good.
+
+    Returns the number of documents removed."""
+    known = store.get_live_item_ids(source_key, settings)
+    if not known:
+        return 0
+    listed = {document.item_id for document in batch.documents}
+    if not listed:
+        log.error("The full listing returned no documents; not treating %d indexed "
+                  "document(s) as deleted.", len(known))
+        return 0
+    orphans = known - listed
+    if not orphans:
+        return 0
+    if len(orphans) > len(known) * settings.rag_sync_orphan_sweep_max_fraction:
+        log.error(
+            "%d of %d indexed documents are missing from SharePoint - more than looks like "
+            "normal deletion (a permissions or folder-path change?). Nothing was removed; "
+            "check the source and re-run.", len(orphans), len(known),
+        )
+        return 0
+    for item_id in sorted(orphans):
+        index.delete_document(client, collection, item_id)
+        store.mark_document_deleted(item_id, settings)
+    log.info("Removed %d document(s) no longer in the source: %s",
+             len(orphans), ", ".join(sorted(orphans)))
+    return len(orphans)
 
 
 def _ingest_one(

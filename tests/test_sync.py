@@ -62,6 +62,7 @@ def harness(monkeypatch):
                         lambda k, link, full, s: calls["saved_link"].append((link, full)))
     monkeypatch.setattr(sync_module.store, "mark_document_deleted",
                         lambda i, s: calls["deleted_pg"].append(i))
+    monkeypatch.setattr(sync_module.store, "get_live_item_ids", lambda source_type, s: None)
     monkeypatch.setattr(sync_module.store, "record_document",
                         lambda **kw: calls["recorded"].append(kw))
     monkeypatch.setattr(sync_module.store, "record_document_failure",
@@ -286,3 +287,61 @@ def test_isolated_failures_do_not_trip_the_abort(monkeypatch, harness):
     assert report.documents_failed == 1
     assert report.documents_indexed == 5
     assert report.error == ""
+
+
+# ------------------------------------------------ orphan sweep (full enumeration)
+# A full enumeration without a delta token lists only files that exist NOW; Graph
+# does not report files deleted before it. Anything we hold that the listing no
+# longer contains was deleted (or its folder was) and must leave the index.
+def _known(monkeypatch, ids):
+    monkeypatch.setattr(sync_module.store, "get_live_item_ids", lambda source_type, s: set(ids))
+
+
+def test_full_run_removes_documents_missing_from_sharepoint(monkeypatch, harness):
+    _known(monkeypatch, {"i1", "i2", "gone"})
+    batch = SourceBatch([_doc("i1"), _doc("i2", "b.docx", content_hash="h2")], [], "l")
+    report = _run(monkeypatch, harness, batch, full=True)
+    assert "gone" in harness["deleted_qdrant"]
+    assert harness["deleted_pg"] == ["gone"]
+    assert report.documents_deleted == 1
+
+
+def test_rejected_token_resync_also_sweeps(monkeypatch, harness):
+    _known(monkeypatch, {"i1", "gone"})
+    batch = SourceBatch([_doc("i1")], [], "l", resynced=True)
+    _run(monkeypatch, harness, batch)
+    assert harness["deleted_pg"] == ["gone"]
+
+
+def test_incremental_run_does_not_sweep(monkeypatch, harness):
+    """An incremental batch lists only CHANGED files - absence means unchanged."""
+    _known(monkeypatch, {"i1", "unchanged"})
+    monkeypatch.setattr(sync_module.store, "get_sync_state", lambda k, s: "saved-token")
+    _run(monkeypatch, harness, SourceBatch([_doc("i1")], [], "l"))
+    assert harness["deleted_pg"] == []
+
+
+def test_first_run_without_a_saved_token_sweeps(monkeypatch, harness):
+    """No token yet means the listing is complete, exactly like --full."""
+    _known(monkeypatch, {"i1", "gone"})
+    _run(monkeypatch, harness, SourceBatch([_doc("i1")], [], "l"))
+    assert harness["deleted_pg"] == ["gone"]
+
+
+def test_empty_listing_never_wipes_the_index(monkeypatch, harness):
+    _known(monkeypatch, {"i1", "i2"})
+    report = _run(monkeypatch, harness, SourceBatch([], [], "l"), full=True)
+    assert harness["deleted_pg"] == []
+    assert report.documents_deleted == 0
+
+
+def test_sweep_refuses_to_remove_more_than_half_the_library(monkeypatch, harness):
+    """A permissions or folder-path mistake looks like mass deletion; stop and log."""
+    _known(monkeypatch, {"i1", "a", "b", "c"})
+    _run(monkeypatch, harness, SourceBatch([_doc("i1")], [], "l"), full=True)
+    assert harness["deleted_pg"] == []
+
+
+def test_no_sweep_when_the_database_is_unavailable(monkeypatch, harness):
+    _run(monkeypatch, harness, SourceBatch([_doc("i1")], [], "l"), full=True)
+    assert harness["deleted_pg"] == []

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
-from typing import List
+from typing import Iterator, List
 
+import tiktoken
 from openai import AzureOpenAI
 
 from ..config import Settings, get_settings
@@ -20,6 +21,44 @@ log = logging.getLogger(__name__)
 
 class EmbeddingError(RuntimeError):
     """Raised when an embedding call fails or is misconfigured."""
+
+
+# Azure OpenAI embedding limits. A whole large document in one request failed with
+# "maximum request size is 300000 tokens per request" (ISG Generative AI Services
+# 2025.xlsx), so requests are sized well under that.
+MAX_TOKENS_PER_INPUT = 8191
+MAX_TOKENS_PER_REQUEST = 100_000
+MAX_INPUTS_PER_REQUEST = 2048
+
+_ENCODING = tiktoken.get_encoding("cl100k_base")  # text-embedding-3-* tokenizer
+
+
+def _token_len(text: str) -> int:
+    return len(_ENCODING.encode(text))
+
+
+def _truncate(text: str) -> str:
+    tokens = _ENCODING.encode(text)
+    if len(tokens) <= MAX_TOKENS_PER_INPUT:
+        return text
+    log.warning("Embedding input of %d tokens truncated to %d.", len(tokens), MAX_TOKENS_PER_INPUT)
+    return _ENCODING.decode(tokens[:MAX_TOKENS_PER_INPUT])
+
+
+def _request_batches(texts: List[str]) -> Iterator[List[str]]:
+    """Split inputs into consecutive requests that respect both endpoint limits."""
+    batch: List[str] = []
+    batch_tokens = 0
+    for text in texts:
+        tokens = _token_len(text)
+        if batch and (batch_tokens + tokens > MAX_TOKENS_PER_REQUEST
+                      or len(batch) >= MAX_INPUTS_PER_REQUEST):
+            yield batch
+            batch, batch_tokens = [], 0
+        batch.append(text)
+        batch_tokens += tokens
+    if batch:
+        yield batch
 
 
 class DenseEmbedder:
@@ -45,11 +84,14 @@ class DenseEmbedder:
     def embed(self, texts: List[str]) -> List[List[float]]:
         if not texts:
             return []
-        response = self._client.embeddings.create(
-            model=self.settings.azure_openai_embedding_deployment,
-            input=texts,
-        )
-        return [item.embedding for item in response.data]
+        vectors: List[List[float]] = []
+        for batch in _request_batches([_truncate(t) for t in texts]):
+            response = self._client.embeddings.create(
+                model=self.settings.azure_openai_embedding_deployment,
+                input=batch,
+            )
+            vectors.extend(item.embedding for item in response.data)
+        return vectors
 
     def embed_one(self, text: str) -> List[float]:
         return self.embed([text])[0]

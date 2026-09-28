@@ -194,6 +194,24 @@ def test_legacy_xls_is_now_readable():
     assert "Starter" in doc.text
 
 
+def test_xls_named_file_that_is_really_xlsx_is_readable():
+    # "Forrester responses.XLS" is a modern workbook under a legacy extension;
+    # xlrd rejects it with "Excel xlsx file; not supported".
+    from openpyxl import Workbook
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Responses"
+    sheet.append(["Question", "Answer"])
+    sheet.append(["Headcount?", "About 30,000"])
+    buffer = io.BytesIO()
+    book.save(buffer)
+
+    doc = extract_text("Forrester responses.XLS", buffer.getvalue())
+    assert "Question | Answer" in doc.text
+    assert "About 30,000" in doc.text
+
+
 def test_rejected_binary_formats_yield_no_sections():
     from app.config import get_settings
     from app.document_sections import extract_sections

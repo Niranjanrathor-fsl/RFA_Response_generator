@@ -9,7 +9,7 @@ has to hand-write new questions every time:
     python -m tests.eval.generate_dataset
 
 Output: tests/eval/generated_dataset.json, loaded automatically by run_eval.py
-alongside the small hand-picked tests/eval/dataset.py regression baseline.
+(the only question source it uses).
 """
 
 from __future__ import annotations
@@ -59,11 +59,13 @@ def run(max_goldens_per_document: int = 3, max_documents: int = 0) -> None:
     try:
         contexts: List[List[str]] = []
         source_files: List[str] = []
-        for document in batch.documents:
-            if indexed and document.item_id not in indexed:
-                continue
-            if max_documents and len(contexts) >= max_documents:
-                break
+        candidates = [d for d in batch.documents if not indexed or d.item_id in indexed]
+        # The listing is grouped by folder, so "the first N" covered one analyst
+        # firm only. Sample evenly across the whole listing instead.
+        if max_documents and len(candidates) > max_documents:
+            step = len(candidates) / max_documents
+            candidates = [candidates[int(i * step)] for i in range(max_documents)]
+        for document in candidates:
             try:
                 sections = extract_sections(document.name, document.fetch())
             except Exception as exc:  # noqa: BLE001 - one bad file must not stop the run

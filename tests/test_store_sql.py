@@ -189,3 +189,50 @@ def test_advisory_lock_heartbeats_so_the_session_is_never_idle(monkeypatch):
         assert seen_during_body.wait(timeout=5), "no heartbeat query ran while the lock was held"
 
     assert any("SELECT 1" in q for q in queries)
+
+
+def test_a_lock_held_by_a_dead_session_is_reclaimed(monkeypatch):
+    """Observed live: a network blip left the finished ingest's lock session
+    idle on the server for 100 minutes, and every scheduled sync skipped. A live
+    holder heartbeats every minute, so a holder idle far longer than that is dead:
+    terminate it and take the lock."""
+    queries = []
+    attempts = {"n": 0}
+
+    class _Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, *a):
+            queries.append(sql)
+
+        def fetchone(self):
+            if "pg_try_advisory_lock" in queries[-1]:
+                attempts["n"] += 1
+                return (attempts["n"] > 1,)  # held on the first try, free after the reap
+            return (True,)
+
+        def fetchall(self):
+            return [(True,)]
+
+    class _Conn:
+        autocommit = False
+
+        def cursor(self):
+            return _Cursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("psycopg2.connect", lambda **kw: _Conn())
+    settings = get_settings().model_copy(update={"pg_enabled": True})
+
+    with store.advisory_lock(settings) as acquired:
+        assert acquired is True
+
+    reap = next(q for q in queries if "pg_terminate_backend" in q)
+    assert "idle" in reap and "state_change" in reap
+    assert attempts["n"] == 2

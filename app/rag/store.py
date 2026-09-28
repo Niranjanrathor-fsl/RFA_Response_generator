@@ -326,6 +326,25 @@ def record_document_failure(
         log.warning("Could not record ingestion failure for %s: %s", name, exc)
 
 
+def get_live_item_ids(source_type: str, settings: Settings | None = None) -> Optional[Set[str]]:
+    """Item ids we currently hold (not deleted) for one source. None - not an empty
+    set - when the database is off or unreachable, so a caller can never mistake
+    "could not ask" for "we hold nothing"."""
+    settings = settings or get_settings()
+    if not settings.pg_enabled:
+        return None
+    try:
+        with _connection(settings) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT item_id FROM documents WHERE deleted_at IS NULL AND source_type = %s",
+                (source_type,),
+            )
+            return {row[0] for row in cur.fetchall()}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not fetch indexed document ids: %s", exc)
+        return None
+
+
 def mark_document_deleted(item_id: str, settings: Settings | None = None) -> None:
     settings = settings or get_settings()
     if not settings.pg_enabled:
@@ -586,6 +605,8 @@ _SYNC_ADVISORY_LOCK_KEY = 728411
 # keepalives were not enough; this issues a real query so the session is never
 # idle in the first place.
 _LOCK_HEARTBEAT_SECONDS = 60.0
+# A holder silent for this many heartbeats is dead, not busy.
+_STALE_LOCK_HEARTBEATS = 10
 
 
 @contextmanager
@@ -631,6 +652,24 @@ def advisory_lock(
         with conn.cursor() as cur:
             cur.execute("SELECT pg_try_advisory_lock(%s)", (key,))
             acquired = bool(cur.fetchone()[0])
+            if not acquired:
+                # A live holder heartbeats every _LOCK_HEARTBEAT_SECONDS. One idle for
+                # many times that is a dead session the server has not noticed yet -
+                # observed live: 100 minutes after a network blip, every scheduled
+                # sync skipping. Reclaim the lock rather than wait for TCP to give up.
+                cur.execute(
+                    """
+                    SELECT pg_terminate_backend(a.pid)
+                    FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+                    WHERE l.locktype = 'advisory' AND l.objid = %s AND a.state = 'idle'
+                      AND a.state_change < now() - make_interval(secs => %s)
+                    """,
+                    (key, _LOCK_HEARTBEAT_SECONDS * _STALE_LOCK_HEARTBEATS),
+                )
+                if any(row[0] for row in cur.fetchall()):
+                    log.warning("Reclaimed the sync lock from a dead session.")
+                    cur.execute("SELECT pg_try_advisory_lock(%s)", (key,))
+                    acquired = bool(cur.fetchone()[0])
     except Exception as exc:  # noqa: BLE001 - never break the caller over the lock
         log.warning("Could not obtain the sync advisory lock: %s", exc)
         acquired = False
