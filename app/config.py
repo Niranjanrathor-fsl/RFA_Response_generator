@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     rag_max_questions: int = 60
     rag_per_question_top_k: int = 8
     rag_question_search_workers: int = 4
+    # Passages scored per reranker pass. Only memory changes with it, not scores.
+    # Measured: 4 parallel passes at fastembed's default of 64 took the process
+    # from 2.4 GB to 7.4 GB (never released); one-at-a-time at 16 stayed at 2.4 GB.
+    rag_rerank_batch_size: int = 16
     # One LLM call per upload rewrites each detected question into a standalone
     # search query (see app/questions.understand_questions). Off -> raw question text.
     rag_query_understanding_enabled: bool = True

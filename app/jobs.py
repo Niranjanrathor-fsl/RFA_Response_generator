@@ -28,8 +28,11 @@ from .config import get_settings
 
 log = logging.getLogger(__name__)
 
-# A job still "running" after this long was lost to a restart or a crash.
-STALE_AFTER_SECONDS = 45 * 60
+# A running job touches its file this often. When the touches stop, the worker
+# running it is gone (a crash, an out-of-memory kill, a restart) - so the browser
+# is told within minutes instead of waiting on a job that will never finish.
+HEARTBEAT_SECONDS = 20
+STALE_AFTER_SECONDS = 120
 # Finished jobs are swept after a day.
 KEEP_SECONDS = 24 * 60 * 60
 
@@ -76,7 +79,16 @@ def start(owner: str, work: Callable[[], Awaitable[Any]]) -> str:
     started = time.time()
     _write(job_id, {"status": "running", "owner": owner, "started": started})
 
+    async def heartbeat() -> None:
+        while True:
+            await asyncio.sleep(HEARTBEAT_SECONDS)
+            try:
+                os.utime(_path(job_id))
+            except OSError:
+                pass
+
     async def run() -> None:
+        beat = asyncio.create_task(heartbeat())
         try:
             record = {"status": "done", "result": jsonable_encoder(await work())}
         except HTTPException as exc:
@@ -88,6 +100,8 @@ def start(owner: str, work: Callable[[], Awaitable[Any]]) -> str:
                 "status_code": 500,
                 "detail": "Generation failed unexpectedly. Please try again.",
             }
+        finally:
+            beat.cancel()
         _write(job_id, {**record, "owner": owner, "started": started})
 
     task = asyncio.create_task(run())
@@ -101,19 +115,21 @@ def get(job_id: str, owner: str) -> Optional[Dict[str, Any]]:
     # The id becomes a filename - accept only what token_urlsafe produces.
     if not job_id or not all(c.isalnum() or c in "-_" for c in job_id):
         return None
+    path = _path(job_id)
     try:
-        record = json.loads(_path(job_id).read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8"))
+        last_beat = path.stat().st_mtime
     except (OSError, ValueError):
         return None
     if record.pop("owner", None) != owner:
         return None
 
     elapsed = time.time() - record.pop("started", time.time())
-    if record["status"] == "running" and elapsed > STALE_AFTER_SECONDS:
+    if record["status"] == "running" and time.time() - last_beat > STALE_AFTER_SECONDS:
         return {
             "status": "error",
             "status_code": 500,
-            "detail": "This generation was interrupted (the server restarted). Please run it again.",
+            "detail": "This generation was interrupted - the server stopped while working on it. Please run it again.",
         }
     record["elapsed_seconds"] = int(elapsed)
     return record

@@ -45,6 +45,12 @@ class RetrievedChunk:
 
 
 _reranker_lock = threading.Lock()
+# One rerank at a time per process. Each ONNX run allocates working memory in
+# proportion to its batch, and 4 parallel per-question reranks drove the Azure
+# worker (7 GB, shared) into out-of-memory kills. Parallelism bought little:
+# ONNX already spreads a single run across every core. Embedding and Qdrant
+# calls still run in parallel; only this CPU-bound step queues.
+_rerank_run_lock = threading.Lock()
 
 
 @lru_cache
@@ -190,7 +196,9 @@ def _search_uncached(query: str, settings: Settings) -> List[RetrievedChunk]:
 
         candidates = [(r.payload.get("text", ""), r) for r in results]
         pairs_texts = [t for t, _ in candidates]
-        scores = list(_reranker().rerank(query, pairs_texts))
+        reranker = _reranker()
+        with _rerank_run_lock:
+            scores = list(reranker.rerank(query, pairs_texts, batch_size=settings.rag_rerank_batch_size))
 
         ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
         top = _drop_near_duplicates(ranked, settings.rag_rerank_top_k, settings.rag_near_duplicate_threshold)

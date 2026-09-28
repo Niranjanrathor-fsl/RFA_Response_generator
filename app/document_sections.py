@@ -24,6 +24,7 @@ Design principles (see chat history for the full reasoning):
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 from pathlib import Path
@@ -73,6 +74,10 @@ def _image_dims_ok(blob: bytes, settings: Settings) -> bool:
             return is_large_enough(img.width, img.height, settings)
     except Exception:  # noqa: BLE001
         return False
+
+
+def _digest(blob: bytes) -> str:
+    return hashlib.sha256(blob).hexdigest()
 
 
 def _describe_image_chunk(blob: bytes, settings: Settings, label: str) -> str:
@@ -203,6 +208,7 @@ def extract_docx_sections(data: bytes, settings: Settings) -> List[Tuple[str, st
 
         image_num = 0
         seen_partnames = set()
+        seen_digests = set()
         for doc_part in doc_parts:
             for rel in doc_part.rels.values():
                 if rel.reltype != RT.IMAGE:
@@ -214,6 +220,13 @@ def extract_docx_sections(data: bytes, settings: Settings) -> List[Tuple[str, st
                 image_num += 1
                 try:
                     blob = rel.target_part.blob
+                    digest = _digest(blob)
+                    if digest in seen_digests:
+                        # The same picture stored again under another part name. Form-style
+                        # documents do this for every checkbox: one upload held 200 copies of
+                        # two icons and spent 5+ minutes on identical vision calls.
+                        continue
+                    seen_digests.add(digest)
                     if not _image_dims_ok(blob, settings):
                         continue
                     description = _describe_image_chunk(blob, settings, f"DOCX image {image_num}")

@@ -53,7 +53,12 @@ safe — the advisory lock lets only one of them sync at a time.
 - **Resource:** `RFA-generator`, resource group `DataScienceTeam-Internal`,
   plan `agenticaidemos` (B3, Linux, Python 3.11). Always On is enabled.
 - **Startup command** (set in Azure, mirrors `startup.sh`):
-  `gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --workers 2 --bind 0.0.0.0:$PORT --timeout 600`
+  `gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --workers 1 --bind 0.0.0.0:$PORT --timeout 600`
+- **Memory:** the plan is a shared 7 GB B3 hosting ~160 apps. The reranker needs
+  ~2.4 GB per worker, hence 1 worker. Reranks run one at a time in batches of 16
+  (`rag_rerank_batch_size`): 4 parallel reranks at batch 64 reached 7.4 GB and got
+  the worker OOM-killed mid-generation (2026-09-28). Scores are identical at any
+  batch size, and 16 was also the fastest on CPU (21 s vs 28 s at 64, per question).
 - **App settings** mirror the local `.env`, except Azure keeps its own
   `ENVIRONMENT`, `SESSION_SECRET` and `SESSION_HTTPS_ONLY`, and adds:
   - `PUBLIC_BASE_URL` = the Azure URL
@@ -71,7 +76,15 @@ safe — the advisory lock lets only one of them sync at a time.
 - **Long generations:** Azure's front end drops any request open longer than ~230 s,
   and a full RFI takes 10+ minutes. So the browser calls `POST /api/jobs`, gets a
   job id, and polls `GET /api/jobs/{id}` (`app/jobs.py`). `POST /api/generate`
-  still works in one request, for local and scripted use.
+  still works in one request, for local and scripted use. A running job heartbeats
+  its file every 20 s; if the worker dies, the browser is told within ~2 minutes.
+  Reading the uploaded files also happens inside the job: every embedded image
+  goes to vision, and a form-style Word file (200 copies of two checkbox icons)
+  took 5+ minutes and produced a 504 when reading was done in the request.
+  Identical pictures inside one Word file are now read once.
+- **Speed lever not yet tested:** ranking fewer candidates (`rag_retrieve_top_k`
+  40 instead of 100) would be ~2.5x faster but may change which evidence is picked.
+  A reranker on a GPU VM (optionally bge-reranker-v2-m3) is the larger option.
 - Postgres and Qdrant are publicly reachable, so no firewall rules were needed.
 
 ---
