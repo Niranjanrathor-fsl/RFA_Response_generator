@@ -118,3 +118,7 @@ class LLMClient:
         if not parsed.get("tabs"):
             raise LLMError("The model response contained no tabs to render.")
         return parsed
+
+    def ask(self, system_prompt: str, user_prompt: str) -> str:
+        """Plain-text answer, no JSON contract. Used by the Phase 2 evaluation harness."""
+        return self._call(system_prompt, user_prompt)

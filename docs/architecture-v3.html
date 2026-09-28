@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RFA Architecture v3</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lucide-static@0.460.0/font/lucide.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap">
+<style>
+  :root {
+    --ink: #13234a; --muted: #4a5878; --line: #d9e0ec; --bg: #ffffff; --card: #ffffff;
+    --navy: #1b2d5c; --blue: #1f6fd1; --green: #16804a; --orange: #d9661b; --purple: #5b3cc4;
+    --teal: #0e8a93; --red: #c22d3b; --magenta: #b0266b; --slate: #33476f; --new: #ea6a12;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { width: 1600px; background: var(--bg); color: var(--ink); font-family: Inter, "Segoe UI", sans-serif;
+         font-size: 12px; line-height: 1.42; padding: 14px 16px 12px; }
+  header { text-align: center; margin-bottom: 10px; }
+  h1 { font-size: 30px; font-weight: 900; letter-spacing: -0.5px; color: var(--navy); }
+  h1 span { color: var(--new); }
+  .sub { font-size: 15px; font-weight: 600; color: var(--blue); margin-top: 2px; }
+  .tech { font-size: 13px; font-weight: 700; color: var(--navy); margin-top: 3px; }
+  .tech em { font-style: normal; color: var(--muted); font-weight: 500; }
+
+  .row { display: flex; align-items: stretch; gap: 0; margin-bottom: 9px; }
+  .arrow { flex: 0 0 18px; display: flex; align-items: center; justify-content: center; color: #8a97b3; font-size: 15px; }
+  .box { border: 1.5px solid var(--c); border-radius: 7px; background: var(--card); display: flex; flex-direction: column; min-width: 0; }
+  .box > h2 { background: var(--c); color: #fff; font-size: 12.5px; font-weight: 800; letter-spacing: .2px; text-transform: uppercase;
+              padding: 5px 9px; border-radius: 5px 5px 0 0; display: flex; align-items: center; gap: 6px; }
+  .box > h2 .n { background: rgba(255,255,255,.22); border-radius: 50%; width: 18px; height: 18px; display: inline-flex;
+                 align-items: center; justify-content: center; font-size: 10.5px; flex: 0 0 18px; }
+  .box > h2 .tag { margin-left: auto; font-size: 8.5px; font-weight: 700; background: rgba(255,255,255,.2); padding: 1px 6px; border-radius: 8px; text-transform: none; letter-spacing: 0; }
+  .body { padding: 7px 9px 8px; display: flex; gap: 8px; flex: 1; }
+  .col { flex: 1; min-width: 0; }
+  .col + .col { border-left: 1px dashed var(--line); padding-left: 8px; }
+  h3 { font-size: 12px; font-weight: 800; color: var(--c); margin-bottom: 3px; display: flex; align-items: center; gap: 5px; }
+  h3 i { font-size: 15px; }
+  ul { list-style: none; }
+  li { position: relative; padding-left: 9px; margin-bottom: 1.5px; color: #26355a; }
+  li::before { content: ""; position: absolute; left: 1px; top: 7px; width: 4px; height: 4px; border-radius: 50%; background: var(--c); }
+  b { font-weight: 700; color: var(--ink); }
+  .new { display: inline-block; background: var(--new); color: #fff; font-size: 8.5px; font-weight: 800; padding: 0 4px; border-radius: 3px;
+         margin-left: 3px; vertical-align: 1px; letter-spacing: .3px; line-height: 11px; }
+  .bigicon { font-size: 34px; color: var(--c); display: block; margin: 2px 0 4px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 3px; margin: 3px 0 4px; }
+  .chip { border: 1px solid var(--line); background: #f5f7fb; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 600; color: #26355a; display: inline-flex; align-items: center; gap: 3px; }
+  .chip i { font-size: 11px; color: var(--c); }
+  .vec { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 4px; padding: 4px 7px; margin-bottom: 4px; background: #f7f5ff; font-size: 11.5px; }
+  .vec i { font-size: 13px; color: var(--c); }
+  .vec b { color: var(--c); }
+  .vec span { color: var(--muted); font-size: 9.5px; margin-left: auto; }
+  .note { background: #fff6ef; border: 1px solid #f6d3b8; border-radius: 4px; padding: 3px 6px; margin-top: 5px; font-size: 9.5px; color: #7a3a0c; }
+  .hitmiss { border-radius: 4px; padding: 4px 7px; margin-bottom: 4px; font-size: 11.5px; }
+  .hit { background: #eaf7ef; border: 1px solid #bfe3cc; }
+  .miss { background: #fdecee; border: 1px solid #f2c3c8; }
+  .score { display: grid; grid-template-columns: 1fr auto; gap: 1px 8px; font-size: 9.8px; margin-top: 2px; }
+  .score span:nth-child(even) { font-weight: 800; text-align: right; }
+  .good { color: var(--green); } .weak { color: var(--red); }
+  .navy { --c: var(--navy); } .blue { --c: var(--blue); } .green { --c: var(--green); } .orange { --c: var(--orange); }
+  .purple { --c: var(--purple); } .teal { --c: var(--teal); } .red { --c: var(--red); } .magenta { --c: var(--magenta); } .slate { --c: var(--slate); }
+
+  /* footer */
+  .foot { display: flex; gap: 9px; }
+  .panel { border: 1.5px solid var(--line); border-radius: 7px; padding: 6px 10px 7px; }
+  .panel > h4 { font-size: 11px; font-weight: 800; text-transform: uppercase; color: var(--navy); text-align: center; margin-bottom: 5px; letter-spacing: .3px; }
+  .lane { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+  .lane .lbl { flex: 0 0 80px; font-weight: 800; font-size: 11px; text-transform: uppercase; color: var(--c); }
+  .step { display: inline-flex; align-items: center; gap: 4px; background: #f5f7fb; border: 1px solid var(--line); border-radius: 4px; padding: 3px 7px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .step i { color: var(--c); font-size: 12px; }
+  .lane .to { color: #8a97b3; font-size: 11px; }
+  .legend { display: grid; grid-template-columns: repeat(3, auto); white-space: nowrap; gap: 4px 14px; font-size: 11px; }
+  .legend span { display: flex; align-items: center; gap: 5px; }
+  .legend span::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--c); }
+  .legend span.nb::before { display: none; }
+  .keytech { display: grid; grid-template-columns: repeat(3, auto); gap: 6px 14px; font-size: 11.5px; }
+  .keytech div { display: flex; align-items: center; gap: 5px; }
+  .keytech i { font-size: 17px; color: var(--blue); }
+  .keytech small { display: block; color: var(--muted); font-size: 9px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>RFA RESPONSE GENERATOR — MULTIMODAL RAG ARCHITECTURE <span>(v3)</span></h1>
+  <div class="sub">Multimodal Input → Per-Question Retrieval → Grounded Generation → Branded Outputs</div>
+  <div class="tech">Azure OpenAI GPT-5.4 + text-embedding-3-large + Qdrant + BAAI/bge-reranker-base + PostgreSQL + DeepEval <em>· <span class="new">NEW</span> = latest update</em></div>
+</header>
+
+<!-- ROW 1: offline ingestion -->
+<div class="row">
+  <div class="box navy" style="flex:0 0 200px">
+    <h2><span class="n">0</span>Login <span class="tag">Active</span></h2>
+    <div class="body"><div class="col">
+      <i class="icon-key-round bigicon"></i>
+      <ul>
+        <li>Username / password</li>
+        <li>OIDC (Entra ID) ready</li>
+      </ul>
+    </div></div>
+  </div>
+  <div class="arrow"><i class="icon-arrow-right"></i></div>
+
+  <div class="box blue" style="flex:0 0 290px">
+    <h2><span class="n">1</span>Data Source</h2>
+    <div class="body"><div class="col">
+      <h3><i class="icon-cloud"></i>SharePoint via Microsoft Graph</h3>
+      <ul>
+        <li>Read-only, all subfolders</li>
+        <li>Only changed files re-processed</li>
+        <li>Auto sync every 15 min</li>
+      </ul>
+      <div class="chips">
+        <span class="chip"><i class="icon-file-text"></i>Word</span><span class="chip"><i class="icon-presentation"></i>PPT</span>
+        <span class="chip"><i class="icon-file-spreadsheet"></i>Excel</span><span class="chip"><i class="icon-file-type"></i>PDF</span>
+        <span class="chip"><i class="icon-image"></i>Images</span>
+      </div>
+    </div></div>
+  </div>
+  <div class="arrow"><i class="icon-arrow-right"></i></div>
+
+  <div class="box orange" style="flex:1">
+    <h2><span class="n">2</span>Ingestion &amp; Multimodal Extraction</h2>
+    <div class="body">
+      <div class="col">
+        <h3><i class="icon-scan-text"></i>Parse</h3>
+        <ul><li>Text, tables, charts</li><li>Scanned pages</li></ul>
+      </div>
+      <div class="col">
+        <h3><i class="icon-image"></i>Vision</h3>
+        <ul><li>Images &amp; diagrams → text</li></ul>
+      </div>
+      <div class="col">
+        <h3><i class="icon-scissors"></i>Chunk</h3>
+        <ul><li>Page / slide / sheet tagged</li><li>AI summary per chunk</li></ul>
+      </div>
+      <div class="col">
+        <h3><i class="icon-zap"></i>Embed</h3>
+        <ul><li>Meaning + keyword vectors</li></ul>
+      </div>
+    </div>
+  </div>
+  <div class="arrow"><i class="icon-arrow-right"></i></div>
+
+  <div class="box purple" style="flex:0 0 250px">
+    <h2><span class="n">3</span>Vector Index (Qdrant)</h2>
+    <div class="body"><div class="col">
+      <div class="vec"><i class="icon-file-text"></i><b>Content</b></div>
+      <div class="vec"><i class="icon-hash"></i><b>Keyword (BM25)</b></div>
+      <div class="vec"><i class="icon-sparkles"></i><b>Summary</b></div>
+      <div class="vec"><i class="icon-fingerprint"></i><b>Document identity</b></div>
+      <div class="vec"><i class="icon-table"></i><b>Table</b></div>
+    </div></div>
+  </div>
+</div>
+
+<!-- ROW 2: request entry -->
+<div class="row">
+  <div class="box green" style="flex:1">
+    <h2><span class="n">4</span>User Input</h2>
+    <div class="body">
+      <div class="col">
+        <h3><i class="icon-upload"></i>Upload or paste</h3>
+        <ul><li>Documents &amp; images</li><li>Multiple files at once</li></ul>
+      </div>
+      <div class="col">
+        <h3><i class="icon-list-checks"></i>Choose</h3>
+        <ul><li>Output formats</li><li>Audience</li></ul>
+      </div>
+    </div>
+  </div>
+  <div class="arrow"><i class="icon-arrow-right"></i></div>
+
+  <div class="box teal" style="flex:1.6">
+    <h2><span class="n">5</span>Question Detection &amp; Understanding <span class="tag">NEW</span></h2>
+    <div class="body">
+      <div class="col">
+        <h3><i class="icon-circle-help"></i>Detect</h3>
+        <ul><li>Finds every question in the files</li><li>Tags file + page / slide / sheet</li></ul>
+      </div>
+      <div class="col">
+        <h3><i class="icon-wand-sparkles"></i>Understand</h3>
+        <ul><li>Rewrites each into a clear search query</li><li>Question type &amp; key names</li></ul>
+      </div>
+    </div>
+  </div>
+  <div class="arrow"><i class="icon-arrow-right"></i></div>
+
+  <div class="box blue" style="flex:1.2">
+    <h2><span class="n">6</span>Semantic Cache</h2>
+    <div class="body">
+      <div class="col">
+        <div class="hitmiss hit"><b class="good">Hit</b> — reuse earlier result</div>
+        <div class="hitmiss miss"><b class="weak">Miss</b> — search, then store</div>
+      </div>
+      <div class="col">
+        <h3><i class="icon-refresh-cw"></i>Refreshed when</h3>
+        <ul><li>A document changes</li><li>New documents added <span class="new">NEW</span></li></ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ROW 3: retrieval + generation -->
+<div class="row">
+  <div class="box blue" style="flex:1">
+    <h2><span class="n">7</span>Hybrid Retrieval</h2>
+    <div class="body"><div class="col">
+      <ul>
+        <li>One search per question <span class="new">NEW</span></li>
+        <li>Meaning + keyword search combined</li>
+      </ul>
+    </div></div>
+  </div>
+  <div class="arrow"><i class="icon-arrow-right"></i></div>
+
+  <div class="box red" style="flex:1">
+    <h2><span class="n">8</span>Re-Ranking</h2>
+    <div class="body"><div class="col">
+      <ul>
+        <li>bge-reranker-base scoring</li>
+        <li>Duplicate passages removed <span class="new">NEW</span></li>
+      </ul>
+    </div></div>
+  </div>
+  <div class="arrow"><i class="icon-arrow-right"></i></div>
+
+  <div class="box teal" style="flex:1">
+    <h2><span class="n">9</span>Context Assembly</h2>
+    <div class="body"><div class="col">
+      <ul>
+        <li>Evidence grouped per question <span class="new">NEW</span></li>
+        <li>Firstsource knowledge base</li>
+      </ul>
+    </div></div>
+  </div>
+  <div class="arrow"><i class="icon-arrow-right"></i></div>
+
+  <div class="box magenta" style="flex:1">
+    <h2><span class="n">10</span>LLM Generation</h2>
+    <div class="body"><div class="col">
+      <h3><i class="icon-brain"></i>Azure OpenAI GPT-5.4</h3>
+      <ul>
+        <li>Answers every question</li>
+        <li>Tuned to the audience</li>
+      </ul>
+    </div></div>
+  </div>
+</div>
+
+<!-- ROW 4: outputs + quality -->
+<div class="row">
+  <div class="box green" style="flex:1.3">
+    <h2><span class="n">11</span>Branded Outputs</h2>
+    <div class="body"><div class="col">
+      <div class="chips">
+        <span class="chip"><i class="icon-layout-dashboard"></i>Dashboard</span>
+        <span class="chip"><i class="icon-message-square-text"></i>Q&amp;A</span>
+        <span class="chip"><i class="icon-file-text"></i>Word</span>
+        <span class="chip"><i class="icon-presentation"></i>PowerPoint</span>
+        <span class="chip"><i class="icon-file-spreadsheet"></i>Excel</span>
+      </div>
+      <ul><li>Firstsource branding</li></ul>
+    </div></div>
+  </div>
+  <div class="arrow"><i class="icon-arrow-right"></i></div>
+
+  <div class="box purple" style="flex:1">
+    <h2><span class="n">12</span>Quality &amp; Sources</h2>
+    <div class="body">
+      <div class="col">
+        <h3><i class="icon-gauge"></i>Quality badge</h3>
+        <ul><li>Green / red per answer</li></ul>
+      </div>
+      <div class="col">
+        <h3><i class="icon-link"></i>Sources tab</h3>
+        <ul><li>Documents used</li></ul>
+      </div>
+    </div>
+  </div>
+  <div class="arrow"><i class="icon-arrow-right"></i></div>
+
+  <div class="box orange" style="flex:1">
+    <h2><span class="n">13</span>DeepEval (Offline)</h2>
+    <div class="body"><div class="col">
+      <ul>
+        <li>Faithfulness · Answer relevancy</li>
+        <li>Contextual relevancy · precision · recall</li>
+      </ul>
+    </div></div>
+  </div>
+</div>
+
+<!-- STORAGE -->
+<div class="row">
+  <div class="box slate" style="flex:1">
+    <h2><i class="icon-database" style="font-size:14px"></i>PostgreSQL — Non-Vector Storage</h2>
+    <div class="body">
+      <div class="col"><ul><li>Document &amp; sync status</li></ul></div>
+      <div class="col"><ul><li>Evaluation results</li></ul></div>
+      <div class="col"><ul><li>Cache audit</li></ul></div>
+    </div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<div class="foot">
+  <div class="panel" style="flex:2.1">
+    <h4>End-to-End Flow</h4>
+    <div class="lane orange">
+      <span class="lbl">Ingestion</span>
+      <span class="step"><i class="icon-cloud"></i>SharePoint</span><span class="to">→</span>
+      <span class="step"><i class="icon-scan-text"></i>Extract</span><span class="to">→</span>
+      <span class="step"><i class="icon-scissors"></i>Chunk</span><span class="to">→</span>
+      <span class="step"><i class="icon-zap"></i>Embed</span><span class="to">→</span>
+      <span class="step"><i class="icon-layers"></i>Qdrant</span>
+    </div>
+    <div class="lane blue">
+      <span class="lbl">Request</span>
+      <span class="step"><i class="icon-upload"></i>Upload</span><span class="to">→</span>
+      <span class="step"><i class="icon-circle-help"></i>Questions</span><span class="to">→</span>
+      <span class="step"><i class="icon-search"></i>Search</span><span class="to">→</span>
+      <span class="step"><i class="icon-filter"></i>Rerank</span><span class="to">→</span>
+      <span class="step"><i class="icon-bot"></i>GPT-5.4</span><span class="to">→</span>
+      <span class="step"><i class="icon-file-output"></i>Outputs</span>
+    </div>
+  </div>
+  <div class="panel" style="flex:1">
+    <h4>Legend</h4>
+    <div class="legend">
+      <span class="blue">Source / retrieval</span><span class="orange">Ingestion / eval</span><span class="purple">Index / quality</span>
+      <span class="green">Input / output</span><span class="teal">Questions</span><span class="red">Re-ranking</span>
+      <span class="magenta">Generation</span><span class="slate">PostgreSQL</span><span class="nb"><span class="new" style="margin:0">NEW</span>&nbsp;Latest update</span>
+    </div>
+  </div>
+  <div class="panel" style="flex:1.2">
+    <h4>Key Technologies</h4>
+    <div class="keytech">
+      <div><i class="icon-layers"></i><b>Qdrant</b></div>
+      <div><i class="icon-database"></i><b>PostgreSQL</b></div>
+      <div><i class="icon-brain"></i><b>Azure OpenAI</b></div>
+      <div><i class="icon-filter"></i><b>bge-reranker</b></div>
+      <div><i class="icon-server"></i><b>FastAPI</b></div>
+      <div><i class="icon-clipboard-check"></i><b>DeepEval</b></div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

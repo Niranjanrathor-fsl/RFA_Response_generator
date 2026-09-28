@@ -12,12 +12,33 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 # Set before any app module imports its settings.
-os.environ.setdefault("AZURE_OPENAI_API_KEY", "test-key-not-real")
-os.environ.setdefault("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com/")
-os.environ.setdefault("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
-os.environ.setdefault("AUTH_MODE", "disabled")
-os.environ.setdefault("ENVIRONMENT", "local")
-os.environ.setdefault("SESSION_SECRET", "test-secret")
+#
+# These are ASSIGNED, not setdefault-ed, and that distinction matters. DeepEval
+# registers a pytest plugin, which pytest loads BEFORE any conftest, and importing
+# it calls python-dotenv's load_dotenv() - so by the time this file runs, the
+# developer's real .env is already in os.environ. With setdefault the lines below
+# were silently no-ops, and the suite ran against live Qdrant, live Postgres and
+# real Azure endpoints (~7.5 minutes, and mutating shared infrastructure).
+# Assignment is what actually makes the promise in this module's docstring true.
+os.environ["AZURE_OPENAI_API_KEY"] = "test-key-not-real"
+os.environ["AZURE_OPENAI_ENDPOINT"] = "https://test.openai.azure.com/"
+os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = "gpt-4o"
+os.environ["AUTH_MODE"] = "disabled"
+os.environ["ENVIRONMENT"] = "local"
+os.environ["SESSION_SECRET"] = "test-secret"
+# Never let the test suite depend on live Qdrant/Postgres/SharePoint, even if
+# the developer's local .env has them enabled for manual testing.
+os.environ["RAG_ENABLED"] = "false"
+os.environ["PG_ENABLED"] = "false"
+os.environ["RAG_VISION_ENABLED"] = "false"
+os.environ["RAG_CACHE_ENABLED"] = "false"
+os.environ["RAG_SYNC_ENABLED"] = "false"
+# Pinned for the same reason: the SharePoint folder path feeds folder-path
+# derivation, so leaving it to the developer's .env makes those tests pass or
+# fail depending on whose machine they run on.
+os.environ["SHAREPOINT_SITE_URL"] = "https://test.sharepoint.com/sites/Test"
+os.environ["SHAREPOINT_LIBRARY"] = "Documents"
+os.environ["SHAREPOINT_FOLDER"] = "Content/Analyst"
 
 from app.schemas import ResponseDocument  # noqa: E402
 

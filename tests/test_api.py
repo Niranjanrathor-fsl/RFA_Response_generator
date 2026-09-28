@@ -85,7 +85,7 @@ def test_frontend_never_references_the_cowork_bridge():
     app_js = (get_settings().static_dir / "js" / "app.js").read_text(encoding="utf-8")
     assert "askClaude" not in app_js
     assert "window.cowork." not in app_js
-    assert "/api/generate" in app_js
+    assert "/api/jobs" in app_js
     assert "api.anthropic.com" not in app_js  # browser never talks to Anthropic
 
 
@@ -133,6 +133,34 @@ def test_single_source_prompt_has_no_multi_document_section(client, stub_llm):
     client.post("/api/generate", data={"pasted": "Just one source."})
     assert "MULTIPLE SOURCE DOCUMENTS" not in stub_llm.last_user_prompt
     assert "SOURCE DOCUMENT 1 of" not in stub_llm.last_user_prompt
+
+
+def test_every_detected_question_is_searched_separately(client, stub_llm, monkeypatch):
+    searched = []
+
+    def fake_per_question(questions, settings=None):
+        searched.extend(questions)
+        return [(q, []) for q in questions]
+
+    monkeypatch.setattr(generate_route, "search_per_question", fake_per_question)
+    # Past the old 8,000-character single-query window.
+    filler = "Background context about the programme. " * 250
+    client.post("/api/generate", data={
+        "pasted": f"Q1. Describe your governance model.\n{filler}\nQ2. What is your headcount?"
+    })
+
+    assert searched == ["Describe your governance model.", "What is your headcount?"]
+
+
+def test_input_without_questions_falls_back_to_one_search(client, stub_llm, monkeypatch):
+    single = []
+    monkeypatch.setattr(generate_route, "search_per_question",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("not expected")))
+    monkeypatch.setattr(generate_route, "rag_search", lambda q, *a: single.append(q) or [])
+
+    client.post("/api/generate", data={"pasted": "Firstsource delivers intelligent operations."})
+
+    assert single == ["Firstsource delivers intelligent operations."]
 
 
 def test_knowledge_base_is_injected_server_side(client, stub_llm):
@@ -228,6 +256,88 @@ def test_unrenderable_model_output_surfaces_as_502(client, monkeypatch):
     assert response.status_code == 502
 
 
+# ------------------------------------------------------------ background jobs
+@pytest.fixture
+def job_dir(tmp_path, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "job_dir", str(tmp_path))
+    return tmp_path
+
+
+def _wait_for_job(client, job_id):
+    import time
+
+    for _ in range(200):
+        response = client.get(f"/api/jobs/{job_id}")
+        assert response.status_code == 200
+        body = response.json()
+        if body["status"] != "running":
+            return body
+        time.sleep(0.02)
+    raise AssertionError("job never finished")
+
+
+def test_job_returns_the_same_result_as_generate(client, stub_llm, job_dir):
+    response = client.post("/api/jobs", data={"pasted": "Q1. Describe your liability model."})
+    assert response.status_code == 202
+
+    job = _wait_for_job(client, response.json()["job_id"])
+    assert job["status"] == "done"
+    assert job["result"]["mode"] == "rfi"
+    assert job["result"]["question_count"] == 3
+    assert job["result"]["model"] == "stub-model"
+
+
+def test_job_rejects_unreadable_input_immediately(client, stub_llm, job_dir):
+    response = client.post("/api/jobs", data={"pasted": "   "})
+    assert response.status_code == 400
+    assert list(job_dir.glob("*.json")) == []
+
+
+def test_job_failure_keeps_the_status_code_and_message(client, job_dir, monkeypatch):
+    from app.llm import LLMError
+
+    class FailingClient(StubLLMClient):
+        def generate_document(self, system_prompt, user_prompt):
+            raise LLMError("Azure OpenAI API returned 529: overloaded")
+
+    monkeypatch.setattr(generate_route, "LLMClient", FailingClient)
+    job_id = client.post("/api/jobs", data={"pasted": "Q1. Anything?"}).json()["job_id"]
+
+    job = _wait_for_job(client, job_id)
+    assert job["status"] == "error"
+    assert job["status_code"] == 502
+    assert "overloaded" in job["detail"]
+
+
+def test_unknown_or_malformed_job_id_is_404(client, job_dir):
+    assert client.get("/api/jobs/doesnotexist").status_code == 404
+    assert client.get("/api/jobs/..%2F..%2Fetc").status_code == 404
+
+
+def test_job_is_invisible_to_another_user(job_dir):
+    from app import jobs
+
+    (job_dir / "abc.json").write_text(
+        json.dumps({"status": "running", "owner": "a@x.com", "started": 0})
+    )
+    assert jobs.get("abc", "b@x.com") is None
+
+
+def test_job_lost_to_a_restart_reports_an_error(job_dir):
+    import time
+
+    from app import jobs
+
+    (job_dir / "abc.json").write_text(
+        json.dumps({"status": "running", "owner": "a@x.com", "started": time.time() - 3 * 3600})
+    )
+    job = jobs.get("abc", "a@x.com")
+    assert job["status"] == "error"
+    assert "interrupted" in job["detail"]
+
+
 def test_summary_mode_detected_when_no_questions(client, monkeypatch):
     class SummaryClient(StubLLMClient):
         payload = SAMPLE_SUMMARY_PAYLOAD
@@ -285,3 +395,15 @@ def test_render_is_stateless_and_repeatable(client, stub_llm):
 def test_render_validates_the_document_body(client):
     response = client.post("/api/render/dashboard", json={"document": {"tabs": "nope"}})
     assert response.status_code == 422
+
+
+def test_hidden_attribute_is_enforced_in_css():
+    """The login gate toggles `hidden` on #app, but `.app{display:grid}` is a
+    class selector and outranks the browser's default [hidden]{display:none}.
+    Without an explicit rule the app renders straight through the sign-in card.
+    """
+    from app.config import get_settings
+
+    css = (get_settings().static_dir / "css" / "app.css").read_text(encoding="utf-8")
+    assert "[hidden]" in css
+    assert "display:none!important" in css.replace(" ", "")

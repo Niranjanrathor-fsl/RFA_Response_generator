@@ -49,10 +49,141 @@ class Settings(BaseSettings):
     max_prompt_corpus_chars: int = 48_000
     max_knowledge_chars_per_file: int = 60_000
 
+    # ------------------------------------------------------- RAG (Phase 1)
+    # Master switch. Off by default so the app runs unchanged until configured.
+    rag_enabled: bool = False
+    # "local"     -> read documents from rag_local_source_dir (no Azure AD needed, for testing)
+    # "sharepoint" -> read documents from Microsoft Graph
+    rag_source: Literal["local", "sharepoint"] = "local"
+    rag_local_source_dir: str = "knowledge/local_docs"
+
+    # Microsoft Graph app-only auth (client credentials flow)
+    ms_tenant_id: str = ""
+    ms_client_id: str = ""
+    ms_client_secret: str = ""
+    sharepoint_site_url: str = ""
+    sharepoint_library: str = "Documents"
+    sharepoint_folder: str = ""
+
+    # Azure OpenAI embedding deployment (separate from the chat deployment)
+    azure_openai_embedding_api_key: str = ""
+    azure_openai_embedding_endpoint: str = ""
+    azure_openai_embedding_deployment: str = ""
+    azure_openai_embedding_api_version: str = "2024-02-01"
+
+    # Qdrant vector database
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str = ""
+    # qdrant_collection: str = "firstsource_analyst_kb"
+
+    # Chunking + retrieval tuning
+    rag_chunk_tokens: int = 200
+    rag_chunk_overlap_tokens: int = 80
+    rag_retrieve_top_k: int = 100
+    rag_rerank_top_k: int = 8
+    # Reranker scores are raw, unbounded cross-encoder logits (calibrated live:
+    # a truly relevant chunk vs. a clearly irrelevant one differ by ~4-5 points).
+    # Drop any chunk trailing more than this far behind the best match for the
+    # query, in addition to the top_k cap - keeps context tight even within top_k.
+    rag_rerank_score_margin: float = 6.0
+    # Drop a retrieved chunk whose text is at least this similar (0-1) to one
+    # already selected - sibling drafts of the same document otherwise fill the
+    # results with copies. 1.0 disables it. See retrieve._drop_near_duplicates.
+    rag_near_duplicate_threshold: float = 0.8
+    # Per-question retrieval for uploaded RFIs (see app/questions.py): each detected
+    # question gets its own search, keeping fewer chunks than a standalone search so
+    # a long questionnaire does not flood the prompt.
+    rag_max_questions: int = 60
+    rag_per_question_top_k: int = 8
+    rag_question_search_workers: int = 4
+    # One LLM call per upload rewrites each detected question into a standalone
+    # search query (see app/questions.understand_questions). Off -> raw question text.
+    rag_query_understanding_enabled: bool = True
+
+    # ------------------------------------------------- Phase 4: multi-vector
+    # Decouples the vector used for MATCHING from the chunk text passed to the
+    # LLM. Each chunk gets several named vectors in Qdrant (see app/rag/index.py):
+    # dense_content (full text), dense_summary (short retrieval-optimized proxy),
+    # dense_metadata (per-document identity: source/topic/entities), dense_table
+    # (conditional, table-heavy chunks only - a natural-language paraphrase).
+    qdrant_collection_v2: str = "firstsource_analyst_kb_v2"
+    rag_table_chunk_threshold: float = 0.4
+
+    # ------------------------------------------------- Phase 4: semantic cache
+    # Caches retrieval results keyed by query-embedding similarity, in a separate
+    # small Qdrant collection (avoids depending on a Postgres vector extension on
+    # the shared RDS instance). Postgres tracks hit/write audit history only.
+    rag_cache_enabled: bool = False
+    qdrant_cache_collection: str = "rag_semantic_cache"
+    rag_cache_similarity_threshold: float = 0.95
+    rag_cache_ttl_hours: int = 168
+
+    # Qdrant write sizing. A 132-chunk document is ~10.8 MB in one request
+    # (132 points x 4 dense vectors x 3072 floats), which the self-hosted VM
+    # times out on every time - retrying the same payload cannot help. Batching
+    # keeps each request small enough to land.
+    rag_upsert_batch_size: int = 32
+    qdrant_timeout_seconds: float = 120.0
+
+    # ------------------------------------------- SharePoint delta sync
+    # Background polling that keeps the index fresh. The Graph delta query both
+    # enumerates the whole nested folder tree and reports incremental changes;
+    # webhooks are deferred until the app has a public HTTPS endpoint.
+    rag_sync_enabled: bool = False
+    rag_sync_interval_minutes: int = 15
+    # Safety net recommended by Microsoft's scale guidance: re-enumerate
+    # periodically so nothing is permanently missed, and retry failed documents.
+    rag_sync_full_reconcile_hours: int = 24
+    # Give up on a document after this many consecutive ingestion failures. It is
+    # retried again only once its content changes.
+    rag_sync_max_attempts: int = 3
+    # Stop a run after this many failures in a row. A run of consecutive failures
+    # means the infrastructure is down, not that the documents are bad - during a
+    # live ingest a DNS outage failed all 99 remaining documents inside one
+    # second, and with Postgres reachable each would have taken a retry strike.
+    rag_sync_abort_after_consecutive_failures: int = 5
+    # SharePoint accumulates "file (1).pdf" copies. Index identical content once so
+    # the retriever cannot see the same evidence twice and over-weight it.
+    rag_skip_duplicate_content: bool = True
+    # A full sync removes documents the source no longer lists, but refuses when
+    # more than this fraction would go at once - that looks like a permissions or
+    # folder-path problem, not people deleting files.
+    rag_sync_orphan_sweep_max_fraction: float = 0.5
+
+    # ------------------------------------------------- Phase 2: PostgreSQL
+    # Metadata (documents, ingestion runs) + DeepEval scorecards. Independent
+    # of RAG_ENABLED: failures here are logged, never block ingestion or generation.
+    pg_enabled: bool = False
+    pg_host: str = ""
+    pg_port: int = 5432
+    pg_dbname: str = ""
+    pg_schema: str = "public"
+    pg_user: str = ""
+    pg_password: str = ""
+    pg_sslmode: str = "require"
+
+    # ------------------------------------------------- Phase 3: vision/OCR
+    # Describes images, charts and scanned pages as text via the existing
+    # gpt-5.4 vision-capable chat deployment - no separate OCR engine, no GPU.
+    rag_vision_enabled: bool = True
+    # Near-zero sanity floor only (skips literal 1px tracking pixels). Real
+    # decorative-vs-meaningful judgment is made by the model itself, not pixel size.
+    rag_vision_min_image_px: int = 16
+    # Pages with less extracted text than this are treated as likely-scanned and
+    # rendered to a whole-page image for vision description instead.
+    rag_vision_min_page_chars: int = 30
+
     # --------------------------------------------------------------- auth
     # "disabled" -> open to anyone who can reach the URL (intranet/VPN only!)
+    # "password" -> username/password against a JSON file on the server. For
+    #               deployments with no identity provider available.
     # "oidc"     -> Azure AD / any OpenID Connect provider (see README)
-    auth_mode: Literal["disabled", "oidc"] = "disabled"
+    auth_mode: Literal["disabled", "password", "oidc"] = "disabled"
+    # Where password users live. Holds salted scrypt hashes, never plaintext.
+    auth_users_file: str = "users.json"
+    # Failed sign-ins allowed per username before a cool-off, and how long it lasts.
+    auth_max_failed_logins: int = 5
+    auth_lockout_minutes: int = 15
     session_secret: str = "change-me-in-production"
     session_cookie_name: str = "fs_rfp_session"
     session_max_age_seconds: int = 60 * 60 * 8
@@ -68,6 +199,9 @@ class Settings(BaseSettings):
     # --------------------------------------------------------------- misc
     cors_allow_origins: str = ""
     embed_fonts_in_html: bool = True
+    # Where background generation jobs keep their state (see app/jobs.py).
+    # Empty = the system temp directory.
+    job_dir: str = ""
 
     @field_validator("log_level")
     @classmethod
@@ -128,6 +262,59 @@ class Settings(BaseSettings):
             problems.append(
                 "AZURE_OPENAI_DEPLOYMENT_NAME is not set - generation requests will fail."
             )
+        if self.rag_enabled:
+            if not self.azure_openai_embedding_api_key:
+                problems.append(
+                    "RAG_ENABLED=true but AZURE_OPENAI_EMBEDDING_API_KEY is not set."
+                )
+            if not self.azure_openai_embedding_endpoint:
+                problems.append(
+                    "RAG_ENABLED=true but AZURE_OPENAI_EMBEDDING_ENDPOINT is not set."
+                )
+            if not self.azure_openai_embedding_deployment:
+                problems.append(
+                    "RAG_ENABLED=true but AZURE_OPENAI_EMBEDDING_DEPLOYMENT is not set."
+                )
+            if not self.qdrant_url:
+                problems.append("RAG_ENABLED=true but QDRANT_URL is not set.")
+            if self.rag_source == "sharepoint":
+                for name, value in (
+                    ("MS_TENANT_ID", self.ms_tenant_id),
+                    ("MS_CLIENT_ID", self.ms_client_id),
+                    ("MS_CLIENT_SECRET", self.ms_client_secret),
+                    ("SHAREPOINT_SITE_URL", self.sharepoint_site_url),
+                ):
+                    if not value:
+                        problems.append(f"RAG_SOURCE=sharepoint but {name} is not set.")
+        if self.rag_sync_enabled:
+            if not self.rag_enabled:
+                problems.append("RAG_SYNC_ENABLED=true but RAG_ENABLED is false - nothing will sync.")
+            if self.rag_source == "sharepoint" and not self.pg_enabled:
+                problems.append(
+                    "RAG_SYNC_ENABLED=true with RAG_SOURCE=sharepoint requires PG_ENABLED=true: "
+                    "the delta link and per-document state have nowhere else to live."
+                )
+            if self.rag_sync_interval_minutes < 1:
+                problems.append("RAG_SYNC_INTERVAL_MINUTES must be at least 1.")
+        if self.pg_enabled:
+            for name, value in (
+                ("PG_HOST", self.pg_host),
+                ("PG_DBNAME", self.pg_dbname),
+                ("PG_USER", self.pg_user),
+            ):
+                if not value:
+                    problems.append(f"PG_ENABLED=true but {name} is not set.")
+        if self.auth_mode == "password":
+            from pathlib import Path as _Path
+
+            users_path = _Path(self.auth_users_file)
+            if not users_path.is_absolute():
+                users_path = BASE_DIR / users_path
+            if not users_path.is_file():
+                problems.append(
+                    f"AUTH_MODE=password but there are no users yet ({users_path} "
+                    "does not exist). Create one: python -m app.users add you@firstsource.com"
+                )
         if self.auth_mode == "oidc":
             for name, value in (
                 ("OIDC_DISCOVERY_URL", self.oidc_discovery_url),
