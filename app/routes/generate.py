@@ -5,9 +5,13 @@ Two steps, deliberately:
   POST /api/generate       uploads -> extracted text -> model -> validated JSON
   POST /api/render/{fmt}   validated JSON -> a downloadable file
 
-Splitting them keeps the service stateless (nothing is persisted server-side) and
-means the browser can produce a second or third output format, or re-download a
-file, without paying for another model call.
+Splitting them means the browser can produce a second or third output format, or
+re-download a file, without paying for another model call.
+
+  POST /api/jobs, GET /api/jobs/{id}   /api/generate as a background job
+
+A full RFI takes longer than Azure App Service lets one request stay open, so the
+browser starts a job and polls it (see app/jobs.py).
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import ValidationError
 
+from .. import jobs
 from ..auth import require_user
 from ..config import get_settings
 from ..extract import ExtractedDocument, ExtractionError, build_corpus, extract_text
@@ -113,15 +118,10 @@ async def _read_uploads(files: Optional[Sequence[UploadFile]]) -> List[Extracted
     return documents
 
 
-@router.post("/generate", response_model=GenerateResult)
-async def generate_document(
-    files: Optional[List[UploadFile]] = File(default=None),
-    pasted: str = Form(default=""),
-    title: str = Form(default=""),
-    audience: str = Form(default="business"),
-    user: dict = Depends(require_user),
-) -> GenerateResult:
-    settings = get_settings()
+async def _read_sources(
+    files: Optional[Sequence[UploadFile]], pasted: str
+) -> List[ExtractedDocument]:
+    """The uploads plus any pasted text, or a 400 if none of it is readable."""
     documents = await _read_uploads(files)
 
     pasted = (pasted or "").strip()
@@ -138,7 +138,58 @@ async def generate_document(
                 f"text, or paste the content directly. Files received: {empty_names}."
             ),
         )
+    return usable
 
+
+@router.post("/generate", response_model=GenerateResult)
+async def generate_document(
+    files: Optional[List[UploadFile]] = File(default=None),
+    pasted: str = Form(default=""),
+    title: str = Form(default=""),
+    audience: str = Form(default="business"),
+    user: dict = Depends(require_user),
+) -> GenerateResult:
+    """Generate in one request. Fine locally; behind Azure's ~230 s request limit
+    use /api/jobs instead, which is what the browser does."""
+    usable = await _read_sources(files, pasted)
+    return await _generate(usable, title, audience, user)
+
+
+@router.post("/jobs", status_code=status.HTTP_202_ACCEPTED)
+async def start_generation_job(
+    files: Optional[List[UploadFile]] = File(default=None),
+    pasted: str = Form(default=""),
+    title: str = Form(default=""),
+    audience: str = Form(default="business"),
+    user: dict = Depends(require_user),
+) -> Dict[str, str]:
+    """Same as /generate, but returns a job id at once; poll GET /api/jobs/{id}.
+
+    Uploads are read before returning, so a bad file still fails immediately.
+    """
+    usable = await _read_sources(files, pasted)
+    job_id = jobs.start(_owner(user), lambda: _generate(usable, title, audience, user))
+    return {"job_id": job_id}
+
+
+@router.get("/jobs/{job_id}", response_model=None)
+async def generation_job_status(job_id: str, user: dict = Depends(require_user)) -> Dict:
+    """{"status": "running" | "done" | "error", ...}. "done" carries the same
+    `result` /generate returns; "error" carries `status_code` and `detail`."""
+    record = jobs.get(job_id, _owner(user))
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown or expired generation job.")
+    return record
+
+
+def _owner(user: dict) -> str:
+    return str(user.get("email") or "")
+
+
+async def _generate(
+    usable: List[ExtractedDocument], title: str, audience: str, user: dict
+) -> GenerateResult:
+    settings = get_settings()
     corpus, truncated = build_corpus(usable)
     prompt_corpus = corpus[: settings.max_prompt_corpus_chars]
     if len(corpus) > settings.max_prompt_corpus_chars:

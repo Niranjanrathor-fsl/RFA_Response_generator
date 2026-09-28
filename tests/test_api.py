@@ -85,7 +85,7 @@ def test_frontend_never_references_the_cowork_bridge():
     app_js = (get_settings().static_dir / "js" / "app.js").read_text(encoding="utf-8")
     assert "askClaude" not in app_js
     assert "window.cowork." not in app_js
-    assert "/api/generate" in app_js
+    assert "/api/jobs" in app_js
     assert "api.anthropic.com" not in app_js  # browser never talks to Anthropic
 
 
@@ -254,6 +254,88 @@ def test_unrenderable_model_output_surfaces_as_502(client, monkeypatch):
     monkeypatch.setattr(generate_route, "LLMClient", BadShapeClient)
     response = client.post("/api/generate", data={"pasted": "Q1. Anything?"})
     assert response.status_code == 502
+
+
+# ------------------------------------------------------------ background jobs
+@pytest.fixture
+def job_dir(tmp_path, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "job_dir", str(tmp_path))
+    return tmp_path
+
+
+def _wait_for_job(client, job_id):
+    import time
+
+    for _ in range(200):
+        response = client.get(f"/api/jobs/{job_id}")
+        assert response.status_code == 200
+        body = response.json()
+        if body["status"] != "running":
+            return body
+        time.sleep(0.02)
+    raise AssertionError("job never finished")
+
+
+def test_job_returns_the_same_result_as_generate(client, stub_llm, job_dir):
+    response = client.post("/api/jobs", data={"pasted": "Q1. Describe your liability model."})
+    assert response.status_code == 202
+
+    job = _wait_for_job(client, response.json()["job_id"])
+    assert job["status"] == "done"
+    assert job["result"]["mode"] == "rfi"
+    assert job["result"]["question_count"] == 3
+    assert job["result"]["model"] == "stub-model"
+
+
+def test_job_rejects_unreadable_input_immediately(client, stub_llm, job_dir):
+    response = client.post("/api/jobs", data={"pasted": "   "})
+    assert response.status_code == 400
+    assert list(job_dir.glob("*.json")) == []
+
+
+def test_job_failure_keeps_the_status_code_and_message(client, job_dir, monkeypatch):
+    from app.llm import LLMError
+
+    class FailingClient(StubLLMClient):
+        def generate_document(self, system_prompt, user_prompt):
+            raise LLMError("Azure OpenAI API returned 529: overloaded")
+
+    monkeypatch.setattr(generate_route, "LLMClient", FailingClient)
+    job_id = client.post("/api/jobs", data={"pasted": "Q1. Anything?"}).json()["job_id"]
+
+    job = _wait_for_job(client, job_id)
+    assert job["status"] == "error"
+    assert job["status_code"] == 502
+    assert "overloaded" in job["detail"]
+
+
+def test_unknown_or_malformed_job_id_is_404(client, job_dir):
+    assert client.get("/api/jobs/doesnotexist").status_code == 404
+    assert client.get("/api/jobs/..%2F..%2Fetc").status_code == 404
+
+
+def test_job_is_invisible_to_another_user(job_dir):
+    from app import jobs
+
+    (job_dir / "abc.json").write_text(
+        json.dumps({"status": "running", "owner": "a@x.com", "started": 0})
+    )
+    assert jobs.get("abc", "b@x.com") is None
+
+
+def test_job_lost_to_a_restart_reports_an_error(job_dir):
+    import time
+
+    from app import jobs
+
+    (job_dir / "abc.json").write_text(
+        json.dumps({"status": "running", "owner": "a@x.com", "started": time.time() - 3 * 3600})
+    )
+    job = jobs.get("abc", "a@x.com")
+    assert job["status"] == "error"
+    assert "interrupted" in job["detail"]
 
 
 def test_summary_mode_detected_when_no_questions(client, monkeypatch):

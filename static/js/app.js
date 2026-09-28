@@ -3,7 +3,8 @@
  *
  * This calls our own backend, which holds the API key and the knowledge base:
  *
- *   POST /api/generate       multipart upload -> validated response document
+ *   POST /api/jobs           multipart upload -> job id (generation runs in the background)
+ *   GET  /api/jobs/{id}      poll until done -> validated response document
  *   POST /api/render/{fmt}   response document -> downloadable file
  *
  * The browser never sees the Azure OpenAI key, the prompt or the knowledge base.
@@ -215,16 +216,14 @@
     form.append('audience', $('#audience').value);
 
     var sourceCount = state.files.length + (pasted ? 1 : 0);
+    var busyMessage = sourceCount > 1
+      ? 'Reading ' + sourceCount + ' documents and generating a merged response…'
+      : 'Reading your content and generating your response…';
     $('#generateBtn').disabled = true;
-    setStatus(
-      sourceCount > 1
-        ? 'Reading ' + sourceCount + ' documents and generating a merged response…'
-        : 'Reading your content and generating your response…',
-      'busy'
-    );
+    setStatus(busyMessage, 'busy');
 
     try {
-      var response = await fetch('/api/generate', {
+      var response = await fetch('/api/jobs', {
         method: 'POST',
         body: form,
         credentials: 'same-origin'
@@ -240,13 +239,57 @@
         return;
       }
 
-      state.result = payload;
+      var job = await waitForJob(payload.job_id, busyMessage);
+      if (!job) { return; }   // the problem is already on screen
+
+      state.result = job.result;
       clearStatus();
       await showResults();
     } catch (error) {
       setStatus('Could not reach the server: ' + (error && error.message ? error.message : error), 'error');
     } finally {
       $('#generateBtn').disabled = false;
+    }
+  }
+
+  // Generation runs as a server-side job: a full RFI takes 10+ minutes, far longer
+  // than one request may stay open behind Azure App Service. Poll until it ends.
+  // Returns the finished job, or null after putting the problem on screen.
+  async function waitForJob(jobId, busyMessage) {
+    var started = Date.now();
+    var failures = 0;
+    while (true) {
+      await new Promise(function (resolve) { setTimeout(resolve, 4000); });
+      var minutes = Math.floor((Date.now() - started) / 60000);
+      setStatus(
+        busyMessage + (minutes ? ' ' + minutes + ' min so far - a large RFI can take 10+ minutes.' : ''),
+        'busy'
+      );
+
+      var response = null;
+      try {
+        response = await fetch('/api/jobs/' + encodeURIComponent(jobId), { credentials: 'same-origin' });
+      } catch (error) {
+        response = null;
+      }
+      // A network blip or a 502/503 from the platform must not throw away a long job.
+      if (!response || response.status >= 502) {
+        if (++failures >= 8) {
+          setStatus('Lost contact with the server while generating. Please try again.', 'error');
+          return null;
+        }
+        continue;
+      }
+      failures = 0;
+
+      var job = await parseJsonSafely(response);
+      if (response.status === 401) { showLogin(); return null; }
+      if (!response.ok) { setStatus(describeError(response, job), 'error'); return null; }
+      if (job.status === 'done') { return job; }
+      if (job.status === 'error') {
+        setStatus(describeError({ status: job.status_code }, job), 'error');
+        return null;
+      }
     }
   }
 
