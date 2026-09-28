@@ -8,8 +8,8 @@ uvicorn[standard]==0.34.0
 gunicorn==23.0.0
 python-multipart==0.0.20
 jinja2==3.1.5
-pydantic==2.10.5
-pydantic-settings==2.7.1
+pydantic==2.13.5
+pydantic-settings==2.15.0
 
 # Session cookie + OIDC single sign-on
 itsdangerous==2.2.0
@@ -36,9 +36,8 @@ msal==1.31.1
 fastembed==0.5.1
 tiktoken==0.8.0
 
-# RAG (Phase 2): metadata storage + evaluation
+# RAG (Phase 2): metadata storage (the DeepEval harness is in requirements-dev.txt)
 psycopg2-binary==2.9.10
-deepeval==4.2.2
 
 # RAG (Phase 3): image/chart/scanned-page handling via GPT-5.4 vision
 pymupdf==1.28.2
@@ -48,7 +47,4 @@ pillow==10.4.0
 beautifulsoup4==4.12.3
 xlrd==2.0.1
 
-# Tests
-pytest==8.3.4
-# Writes the legacy .xls format so the xlrd reader can be tested without a fixture.
-xlwt==1.3.0
+# Tests and the evaluation harness: requirements-dev.txt (not installed on the server).

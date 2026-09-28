@@ -175,7 +175,7 @@ auto-reload. To do it by hand:
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # the app plus pytest and the DeepEval harness
 export ANTHROPIC_API_KEY=sk-ant-...
 uvicorn app.main:app --reload --port 8000
 ```
