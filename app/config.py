@@ -79,8 +79,8 @@ class Settings(BaseSettings):
     # Chunking + retrieval tuning
     rag_chunk_tokens: int = 200
     rag_chunk_overlap_tokens: int = 80
-    rag_retrieve_top_k: int = 100
-    rag_rerank_top_k: int = 8
+    rag_retrieve_top_k: int = 20
+    rag_rerank_top_k: int = 5
     # Reranker scores are raw, unbounded cross-encoder logits (calibrated live:
     # a truly relevant chunk vs. a clearly irrelevant one differ by ~4-5 points).
     # Drop any chunk trailing more than this far behind the best match for the
@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     # question gets its own search, keeping fewer chunks than a standalone search so
     # a long questionnaire does not flood the prompt.
     rag_max_questions: int = 60
-    rag_per_question_top_k: int = 8
+    rag_per_question_top_k: int = 5
     rag_question_search_workers: int = 4
     # One LLM call per upload rewrites each detected question into a standalone
     # search query (see app/questions.understand_questions). Off -> raw question text.
