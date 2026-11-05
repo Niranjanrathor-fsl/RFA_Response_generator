@@ -448,12 +448,12 @@ styles are all served locally.
 
 **5. Scaling.** Extraction and the model call both run in a worker thread
 (`run_in_threadpool`), so one user's 90-second generation does not block anyone
-else's request in the same process. `--workers 2` in the Dockerfile suits a sales team. Each worker
-holds its own copy of the knowledge base (~50 KB), so raising it is cheap; 2–4
-workers per CPU core is a reasonable rule. The app is stateless, so you can run
-several replicas behind a load balancer with no session affinity required —
-except that the SSO session cookie is signed with `SESSION_SECRET`, so **every
-replica must share the same `SESSION_SECRET`**.
+else's request in the same process, so a single worker serves a sales team.
+With `AUTH_MODE=microsoft` keep **`--workers 1` and a single instance**: SSO
+sessions are held in process memory, so extra workers or replicas would sign
+users out at random. Move the session registry to a shared store (e.g. Postgres
+or Redis) before scaling out. In other auth modes the app is stateless and can
+run several replicas, provided **every replica shares the same `SESSION_SECRET`**.
 
 **6. Logs.** Everything goes to stdout/stderr for `docker logs` or your log
 shipper. Each generation logs the title, mode, question count, source count and

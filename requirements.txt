@@ -34,7 +34,7 @@ openpyxl==3.1.5
 qdrant-client==1.12.1
 msal==1.31.1
 fastembed==0.5.1
-# tiktoken==0.8.0
+tiktoken==0.8.0
 
 # RAG (Phase 2): metadata storage (the DeepEval harness is in requirements-dev.txt)
 psycopg2-binary==2.9.10

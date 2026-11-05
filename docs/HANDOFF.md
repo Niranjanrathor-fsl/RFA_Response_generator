@@ -53,7 +53,7 @@ safe — the advisory lock lets only one of them sync at a time.
 - **Resource:** `RFA-generator`, resource group `DataScienceTeam-Internal`,
   plan `agenticaidemos` (B3, Linux, Python 3.11). Always On is enabled.
 - **Startup command** (set in Azure, mirrors `startup.sh`):
-  `gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --workers 2 --bind 0.0.0.0:$PORT --timeout 600`
+  `gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --workers 1 --bind 0.0.0.0:$PORT --timeout 600`
 - **App settings** mirror the local `.env`, except Azure keeps its own
   `ENVIRONMENT`, `SESSION_SECRET` and `SESSION_HTTPS_ONLY`, and adds:
   - `PUBLIC_BASE_URL` = the Azure URL

@@ -42,8 +42,9 @@ def test_signature_ignores_documents_that_failed_to_index():
 
 def test_signature_changes_with_retrieval_settings():
     states = {"a": _state("a")}
-    base = cache._retrieval_signature(_settings(), states)
-    assert cache._retrieval_signature(_settings(rag_rerank_top_k=5), states) != base
+    base_settings = _settings()
+    base = cache._retrieval_signature(base_settings, states)
+    assert cache._retrieval_signature(_settings(rag_rerank_top_k=base_settings.rag_rerank_top_k + 1), states) != base
     assert cache._retrieval_signature(_settings(rag_near_duplicate_threshold=0.9), states) != base
 
 
