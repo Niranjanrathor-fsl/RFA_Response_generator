@@ -33,7 +33,7 @@ def microsoft(tmp_path, monkeypatch):
     allowlist.write_text(json.dumps([{"name": "Allowed User", "email": "allowed@example.com"}]))
     settings = Settings(
         _env_file=None, auth_mode="microsoft",
-        ms_tenant_id=TENANT, ms_client_id=CLIENT_ID, ms_client_secret="test-client-secret",
+        ms_tenant_id=TENANT, sso_client_id=CLIENT_ID, sso_client_secret="test-client-secret",
         session_secret="test-session-secret-with-at-least-32-characters",
         session_cookie_name="test_microsoft", session_https_only=False,
         public_base_url="http://localhost:8000", auth_allowed_users_file=str(allowlist),
@@ -393,7 +393,7 @@ def test_legacy_cookie_cannot_bypass_microsoft(microsoft):
 
 
 @pytest.mark.parametrize("changes", [
-    {"ms_tenant_id": "common"}, {"ms_client_id": ""}, {"ms_client_secret": ""},
+    {"ms_tenant_id": "common"}, {"sso_client_id": ""}, {"sso_client_secret": ""},
     {"session_secret": "short"}, {"public_base_url": "http://example.com"},
     {"public_base_url": "https://example.com", "session_https_only": False},
     {"session_max_age_seconds": 0},
@@ -402,3 +402,17 @@ def test_microsoft_config_fails_closed(microsoft, changes):
     settings = microsoft["settings"].model_copy(update=changes)
     with pytest.raises(ValueError):
         settings.validate_microsoft_auth()
+
+
+def test_sso_uses_its_own_app_registration_not_the_sharepoint_one(microsoft):
+    sharepoint = {"ms_client_id": "44444444-4444-4444-4444-444444444444", "ms_client_secret": "sharepoint-secret"}
+    settings = microsoft["settings"].model_copy(update=sharepoint)
+    settings.validate_microsoft_auth()
+    auth.reset_oauth()
+    client = auth.get_oauth(settings).sso
+    assert client.client_id == CLIENT_ID
+    assert client.client_secret == "test-client-secret"
+
+    # SharePoint credentials alone must never enable sign-in.
+    with pytest.raises(ValueError):
+        settings.model_copy(update={"sso_client_id": "", "sso_client_secret": ""}).validate_microsoft_auth()

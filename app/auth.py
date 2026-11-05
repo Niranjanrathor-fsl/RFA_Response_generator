@@ -94,8 +94,8 @@ def get_oauth(settings: Settings | None = None) -> Any:
         settings.microsoft_authority + "/v2.0/.well-known/openid-configuration"
         if microsoft else settings.oidc_discovery_url
     )
-    client_id = settings.ms_client_id if microsoft else settings.oidc_client_id
-    client_secret = settings.ms_client_secret if microsoft else settings.oidc_client_secret
+    client_id = settings.sso_client_id if microsoft else settings.oidc_client_id
+    client_secret = settings.sso_client_secret if microsoft else settings.oidc_client_secret
     scope = "openid profile email https://graph.microsoft.com/User.Read" if microsoft else settings.oidc_scopes
     config = (metadata_url, client_id, client_secret, scope)
     if _oauth is not None and _oauth_config == config:

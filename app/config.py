@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     ms_tenant_id: str = ""
     ms_client_id: str = ""
     ms_client_secret: str = ""
+    # Separate Entra app registration used only for AUTH_MODE=microsoft user sign-in
+    # (delegated User.Read). The SharePoint app above keeps its own credentials.
+    sso_client_id: str = ""
+    sso_client_secret: str = ""
     sharepoint_site_url: str = ""
     sharepoint_library: str = "Documents"
     sharepoint_folder: str = ""
@@ -280,13 +284,13 @@ class Settings(BaseSettings):
         """Fail closed before serving requests with an incomplete SSO setup."""
         if self.auth_mode != "microsoft":
             return
-        for name, value in (("MS_TENANT_ID", self.ms_tenant_id), ("MS_CLIENT_ID", self.ms_client_id)):
+        for name, value in (("MS_TENANT_ID", self.ms_tenant_id), ("SSO_CLIENT_ID", self.sso_client_id)):
             try:
                 UUID(value)
             except ValueError:
                 raise ValueError(f"{name} must be a tenant-specific Entra GUID.") from None
-        if not self.ms_client_secret:
-            raise ValueError("MS_CLIENT_SECRET is required for Microsoft sign-in.")
+        if not self.sso_client_secret:
+            raise ValueError("SSO_CLIENT_SECRET is required for Microsoft sign-in.")
         if len(self.session_secret) < 32 or self.session_secret == "change-me-in-production":
             raise ValueError("Microsoft sign-in requires a random SESSION_SECRET of at least 32 characters.")
         origin = urlsplit(self.public_base_url.rstrip("/"))

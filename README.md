@@ -271,8 +271,10 @@ Its format is an array of `{"name": "...", "email": "..."}` records.
 AUTH_MODE=microsoft
 AUTH_ALLOWED_USERS_FILE=access/d_and_above_dso.json
 MS_TENANT_ID=<directory-tenant-guid>
-MS_CLIENT_ID=<application-client-guid>
-MS_CLIENT_SECRET=<client-secret-value>
+# Sign-in app registration (separate from the SharePoint app below)
+SSO_CLIENT_ID=<sso-application-client-guid>
+SSO_CLIENT_SECRET=<sso-client-secret-value>
+# SharePoint sync keeps using MS_CLIENT_ID / MS_CLIENT_SECRET (its own app registration)
 PUBLIC_BASE_URL=http://localhost:8000
 SESSION_SECRET=<random-secret-at-least-32-characters>
 SESSION_COOKIE_NAME=fs_rfp_ms_session
