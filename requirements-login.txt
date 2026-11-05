@@ -1,0 +1,24 @@
+# Login/SSO runtime subset of requirements.txt, with matching versions.
+# These dependencies already existed in the app; the SSO integration reused them.
+# Install with: python -m pip install -r requirements-login.txt
+# This subset alone cannot run the full RFP generator: app.main also imports
+# document-generation and AI modules. Use requirements.txt for the complete app.
+# Tests remain in requirements-dev.txt.
+
+# FastAPI routes, local ASGI server, forms, templates and environment settings
+fastapi==0.115.6
+starlette==0.41.3
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+jinja2==3.1.5
+pydantic==2.13.5
+pydantic-settings==2.15.0
+
+# Signed session cookies, Microsoft OIDC, token verification and Graph requests
+itsdangerous==2.2.0
+authlib==1.4.0
+cryptography==44.0.0
+httpx==0.28.1
+
+# MSAL is not needed for this login flow: Authlib handles Microsoft SSO.
+# The full app uses MSAL separately for SharePoint access.

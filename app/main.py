@@ -12,11 +12,13 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import __version__
+from .access import allowed_emails
+from .auth import current_user
 from .config import get_settings
 from .knowledge import KnowledgeBaseError, get_knowledge_base
 from .routes import auth_routes, generate, health
@@ -63,6 +65,9 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    settings.validate_microsoft_auth()
+    if settings.auth_mode == "microsoft" and not settings.managed_provisioning:
+        allowed_emails(settings)
     app = FastAPI(
         title=settings.app_name,
         version=__version__,
@@ -83,6 +88,16 @@ def create_app() -> FastAPI:
         https_only=settings.session_https_only,
         same_site="lax",
     )
+
+    @app.middleware("http")
+    async def auth_headers(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/auth/") or request.url.path in {"/", "/api/config"}:
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+        return response
 
     if settings.cors_origins:
         from fastapi.middleware.cors import CORSMiddleware
@@ -105,7 +120,9 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
+    def index(request: Request):
+        if settings.auth_mode == "microsoft" and current_user(request) is None:
+            return RedirectResponse("/auth/login", status_code=303)
         return FileResponse(str(static_dir / "index.html"))
 
     @app.exception_handler(RequestValidationError)
@@ -134,4 +151,5 @@ if __name__ == "__main__":  # pragma: no cover
         host=settings.host,
         port=settings.port,
         reload=settings.environment == "local",
+        access_log=False,
     )

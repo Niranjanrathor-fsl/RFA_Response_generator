@@ -35,6 +35,50 @@ textarea,input,select{font-family:inherit;}
 .login-card h2{color:var(--fs-dark);font-size:20px;font-weight:900;margin-bottom:8px;}
 .login-card p{font-size:13.5px;color:var(--muted);margin-bottom:22px;}
 
+/* Microsoft sign-in uses the same brand, typeface and palette as the wizard. */
+.sso-layout{display:grid;grid-template-columns:46% 54%;min-height:100svh;color:var(--navy1);}
+.sso-brand{display:flex;flex-direction:column;padding:48px 56px;color:white;
+  background:linear-gradient(135deg,var(--navy0),var(--navy1) 45%,var(--navy2));}
+.sso-logo{width:160px;height:auto;align-self:flex-start;}
+.sso-brand-copy{margin:auto 0;padding:64px 0;}
+.sso-eyebrow{font-size:10px;font-weight:700;letter-spacing:.16em;color:var(--fs-orange);margin-bottom:20px;}
+.sso-brand .sso-eyebrow{color:var(--lblue);}
+.sso-brand h1{font-size:clamp(30px,3.3vw,49px);line-height:1.13;font-weight:700;letter-spacing:-.025em;margin-bottom:24px;}
+.sso-brand-copy>p:not(.sso-eyebrow){font-size:16px;line-height:1.7;color:#C6D2E8;max-width:36ch;}
+.sso-accent{display:block;width:44px;height:4px;background:var(--fs-orange);margin:32px 0 18px;}
+.sso-brand-copy .sso-tagline{font-size:13px;}
+.sso-brand-footer{font-size:11px;color:#9CA9C4;}
+.sso-main{display:flex;align-items:center;justify-content:center;padding:48px 32px;}
+.sso-card{width:100%;max-width:440px;background:white;border:1px solid var(--line);border-radius:16px;padding:40px;
+  box-shadow:0 12px 40px rgba(30,34,71,.05);}
+.sso-card h2{font-size:30px;font-weight:700;letter-spacing:-.02em;margin-bottom:14px;}
+.sso-intro{font-size:14px;line-height:1.7;color:var(--muted);margin-bottom:28px;}
+.sso-button{display:flex;align-items:center;justify-content:center;gap:12px;padding:15px 12px;border:1px solid var(--line);
+  border-radius:7px;color:var(--navy1);background:white;font-size:14px;font-weight:700;}
+.sso-button:hover{border-color:var(--blue);background:#F4F8FC;color:var(--navy2);text-decoration:none;}
+.sso-button:focus-visible,.signout-button:focus-visible{outline:3px solid var(--fs-orange);outline-offset:4px;}
+.ms-mark{display:grid;grid-template-columns:repeat(2,9px);grid-template-rows:repeat(2,9px);gap:2px;flex-shrink:0;}
+.ms-mark i:nth-child(1){background:#f25022;}.ms-mark i:nth-child(2){background:#7fba00;}
+.ms-mark i:nth-child(3){background:#00a4ef;}.ms-mark i:nth-child(4){background:#ffb900;}
+.sso-access{margin-top:28px;border-top:1px solid var(--line2);padding-top:22px;font-size:12px;line-height:1.7;}
+.sso-access p{color:var(--muted);margin-top:5px;}
+.sso-security{color:var(--muted);font-size:11px;line-height:1.6;margin-top:24px;}
+.sso-alert{border-left:3px solid var(--fs-orange);background:#FFF3EA;padding:14px;margin-bottom:22px;
+  color:#873807;font-size:13px;line-height:1.6;}
+.signout-button{border:0;background:transparent;color:var(--lblue);font:inherit;cursor:pointer;padding:0;}
+.signout-button:hover{text-decoration:underline;}
+@media(max-width:760px){
+  .sso-layout{grid-template-columns:1fr;}
+  .sso-brand{padding:28px;}
+  .sso-logo{width:130px;}
+  .sso-brand-copy{padding:30px 0 0;}
+  .sso-brand h1{font-size:32px;margin-bottom:14px;}
+  .sso-brand-copy>p:not(.sso-eyebrow){font-size:14px;}
+  .sso-accent,.sso-tagline,.sso-brand-footer{display:none;}
+  .sso-main{padding:28px 20px;}
+  .sso-card{padding:30px 26px;}
+}
+
 /* ================= APP SHELL: sidebar + main ================= */
 /* The sign-in gate toggles the `hidden` attribute on #app and #loginCard.
    `.app{display:grid}` is a class selector, so it outranks the browser's default

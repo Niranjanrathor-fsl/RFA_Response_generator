@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in | Firstsource RFP Response Generator</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="icon" href="/static/logos/Firstsource-logo-standalone.png">
+</head>
+<body class="sso-page">
+  <main class="sso-layout">
+    <section class="sso-brand" aria-label="Firstsource">
+      <img src="/static/logos/Firstsource-logo-white.png" alt="Firstsource" class="sso-logo">
+      <div class="sso-brand-copy">
+        <p class="sso-eyebrow">RFP RESPONSE GENERATOR</p>
+        <h1>Better responses.<br>One secure workspace.</h1>
+        <p>Turn your questions and source documents into clear, on-brand responses.</p>
+        <span class="sso-accent"></span>
+        <p class="sso-tagline">Intelligence that Operates</p>
+      </div>
+      <p class="sso-brand-footer">Built for Firstsource. Designed for your workflow.</p>
+    </section>
+    <section class="sso-main" aria-labelledby="loginHeading">
+      <div class="sso-card">
+        <p class="sso-eyebrow">YOUR WORKSPACE STARTS HERE</p>
+        <h2 id="loginHeading">Welcome back</h2>
+        <p class="sso-intro">Sign in with your Microsoft work account to continue to the RFP Response Generator.</p>
+        {% if message %}<div class="sso-alert" role="alert">{{ message }}</div>{% endif %}
+        <a class="sso-button" href="/auth/microsoft">
+          <span class="ms-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+          Sign in with Microsoft <span aria-hidden="true">&rarr;</span>
+        </a>
+        <div class="sso-access">
+          <strong>Access is by approval only</strong>
+          <p>Only approved Firstsource accounts can use this application. Contact your administrator if you need access.</p>
+        </div>
+        <p class="sso-security">Your password stays with Microsoft. We never see or store it.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

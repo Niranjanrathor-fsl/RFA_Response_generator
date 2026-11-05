@@ -9,6 +9,8 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Literal
+from urllib.parse import urlsplit
+from uuid import UUID
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -79,8 +81,8 @@ class Settings(BaseSettings):
     # Chunking + retrieval tuning
     rag_chunk_tokens: int = 200
     rag_chunk_overlap_tokens: int = 80
-    rag_retrieve_top_k: int = 20
-    rag_rerank_top_k: int = 5
+    rag_retrieve_top_k: int = 100
+    rag_rerank_top_k: int = 8
     # Reranker scores are raw, unbounded cross-encoder logits (calibrated live:
     # a truly relevant chunk vs. a clearly irrelevant one differ by ~4-5 points).
     # Drop any chunk trailing more than this far behind the best match for the
@@ -94,7 +96,7 @@ class Settings(BaseSettings):
     # question gets its own search, keeping fewer chunks than a standalone search so
     # a long questionnaire does not flood the prompt.
     rag_max_questions: int = 60
-    rag_per_question_top_k: int = 5
+    rag_per_question_top_k: int = 8
     rag_question_search_workers: int = 4
     # One LLM call per upload rewrites each detected question into a standalone
     # search query (see app/questions.understand_questions). Off -> raw question text.
@@ -178,7 +180,9 @@ class Settings(BaseSettings):
     # "password" -> username/password against a JSON file on the server. For
     #               deployments with no identity provider available.
     # "oidc"     -> Azure AD / any OpenID Connect provider (see README)
-    auth_mode: Literal["disabled", "password", "oidc"] = "disabled"
+    # Microsoft mode additionally requires an exact, server-held user allowlist.
+    auth_mode: Literal["disabled", "password", "oidc", "microsoft"] = "microsoft"
+    auth_allowed_users_file: str = "access/d_and_above_dso.json"
     # Where password users live. Holds salted scrypt hashes, never plaintext.
     auth_users_file: str = "users.json"
     # Failed sign-ins allowed per username before a cool-off, and how long it lasts.
@@ -188,6 +192,15 @@ class Settings(BaseSettings):
     session_cookie_name: str = "fs_rfp_session"
     session_max_age_seconds: int = 60 * 60 * 8
     session_https_only: bool = False
+    # Sign out after this much inactivity (seconds). Must not exceed the max age.
+    session_idle_timeout_seconds: int = 60 * 30
+    # Require the ID token to prove multi-factor authentication (amr contains "mfa").
+    ms_require_mfa: bool = True
+    # Managed provisioning: access is controlled in Entra by group membership and/or
+    # app-role assignment (comma-separated). When either is set, the JSON allowlist
+    # is no longer consulted and joiners/leavers are handled in Entra.
+    ms_allowed_group_ids: str = ""
+    ms_required_app_roles: str = ""
 
     oidc_discovery_url: str = ""
     oidc_client_id: str = ""
@@ -246,6 +259,57 @@ class Settings(BaseSettings):
     @property
     def oidc_redirect_uri(self) -> str:
         return self.public_base_url.rstrip("/") + "/auth/callback"
+
+    @property
+    def ms_group_ids(self) -> List[str]:
+        return [g.strip().lower() for g in (self.ms_allowed_group_ids or "").split(",") if g.strip()]
+
+    @property
+    def ms_app_roles(self) -> List[str]:
+        return [r.strip() for r in (self.ms_required_app_roles or "").split(",") if r.strip()]
+
+    @property
+    def managed_provisioning(self) -> bool:
+        return bool(self.ms_group_ids or self.ms_app_roles)
+
+    @property
+    def microsoft_authority(self) -> str:
+        return f"https://login.microsoftonline.com/{self.ms_tenant_id}"
+
+    def validate_microsoft_auth(self) -> None:
+        """Fail closed before serving requests with an incomplete SSO setup."""
+        if self.auth_mode != "microsoft":
+            return
+        for name, value in (("MS_TENANT_ID", self.ms_tenant_id), ("MS_CLIENT_ID", self.ms_client_id)):
+            try:
+                UUID(value)
+            except ValueError:
+                raise ValueError(f"{name} must be a tenant-specific Entra GUID.") from None
+        if not self.ms_client_secret:
+            raise ValueError("MS_CLIENT_SECRET is required for Microsoft sign-in.")
+        if len(self.session_secret) < 32 or self.session_secret == "change-me-in-production":
+            raise ValueError("Microsoft sign-in requires a random SESSION_SECRET of at least 32 characters.")
+        origin = urlsplit(self.public_base_url.rstrip("/"))
+        if (
+            origin.scheme not in {"http", "https"} or not origin.hostname
+            or origin.username or origin.password or origin.path or origin.query or origin.fragment
+        ):
+            raise ValueError("PUBLIC_BASE_URL must be an HTTP(S) origin with no path.")
+        if origin.scheme == "http" and (
+            origin.hostname not in {"localhost", "127.0.0.1", "::1"} or self.environment != "local"
+        ):
+            raise ValueError("Microsoft sign-in requires HTTPS except for local development.")
+        if self.session_https_only != (origin.scheme == "https"):
+            raise ValueError("SESSION_HTTPS_ONLY must match PUBLIC_BASE_URL.")
+        if not 60 <= self.session_max_age_seconds <= 86400:
+            raise ValueError("SESSION_MAX_AGE_SECONDS must be between 60 and 86400.")
+        if not 60 <= self.session_idle_timeout_seconds <= self.session_max_age_seconds:
+            raise ValueError("SESSION_IDLE_TIMEOUT_SECONDS must be between 60 and SESSION_MAX_AGE_SECONDS.")
+        for group in self.ms_group_ids:
+            try:
+                UUID(group)
+            except ValueError:
+                raise ValueError("MS_ALLOWED_GROUP_IDS must be comma-separated Entra group object IDs.") from None
 
     def startup_problems(self) -> List[str]:
         """Configuration errors worth refusing to boot over (or loudly warning)."""

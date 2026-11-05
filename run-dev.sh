@@ -20,4 +20,4 @@ if [ ! -f .env ]; then
 fi
 
 echo "Starting on http://localhost:${PORT:-8000}"
-exec uvicorn app.main:app --reload --host "${HOST:-127.0.0.1}" --port "${PORT:-8000}"
+exec uvicorn app.main:app --reload --no-access-log --host "${HOST:-127.0.0.1}" --port "${PORT:-8000}"

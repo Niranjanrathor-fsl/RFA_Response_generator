@@ -15,5 +15,4 @@ gunicorn app.main:app \
     --workers 2 \
     --bind 0.0.0.0:${PORT:-8000} \
     --timeout 600 \
-    --access-logfile '-' \
     --error-logfile '-'

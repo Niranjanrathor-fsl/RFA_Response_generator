@@ -304,6 +304,7 @@
       })
     });
     if (!response.ok) {
+      if (response.status === 401) { showLogin(); }
       var payload = await parseJsonSafely(response);
       throw new Error(describeError(response, payload));
     }
@@ -463,6 +464,10 @@
     $('#loginCard').hidden = false;
     // "Sign in with SSO" is only true in OIDC mode; password mode shows a form.
     var mode = state.config && state.config.auth_mode;
+    if (mode === 'microsoft') {
+      window.location.assign('/auth/login');
+      return;
+    }
     if (mode === 'password') {
       var button = $('#loginBtn');
       if (button) { button.textContent = 'Sign in'; }
@@ -639,6 +644,7 @@
 
     try {
       var configResponse = await fetch('/api/config', { credentials: 'same-origin' });
+      if (!configResponse.ok) { throw new Error('Configuration unavailable.'); }
       state.config = await configResponse.json();
       // Show the server's curated groups, not the alphabetically-first eight raw
       // extensions - that listed things like .dotx and .log while omitting PDF
@@ -659,6 +665,10 @@
       }
     } catch (error) {
       state.config = null;
+      showLogin();
+      var loginMessage = $('#loginCard').querySelector('p');
+      if (loginMessage) { loginMessage.textContent = 'Unable to verify access. Please reload or sign in again.'; }
+      return;
     }
 
     var authMode = state.config ? state.config.auth_mode : 'disabled';
@@ -669,10 +679,14 @@
 
     try {
       var meResponse = await fetch('/auth/me', { credentials: 'same-origin' });
+      if (!meResponse.ok) { throw new Error('Session verification unavailable.'); }
       var me = await meResponse.json();
       if (me.authenticated) {
-        $('#who').innerHTML = escapeHtml((me.user && me.user.name) || 'Signed in')
-          + '<br><a href="/auth/logout">Sign out</a>';
+        var signout = authMode === 'microsoft'
+          ? '<form method="post" action="/auth/logout"><input type="hidden" name="csrf" value="'
+            + escapeHtml(me.csrf || '') + '"><button class="signout-button" type="submit">Sign out</button></form>'
+          : '<br><a href="/auth/logout">Sign out</a>';
+        $('#who').innerHTML = escapeHtml((me.user && me.user.name) || 'Signed in') + signout;
         showApp();
       } else {
         showLogin();
@@ -684,4 +698,3 @@
 
   document.addEventListener('DOMContentLoaded', boot);
 })();
-

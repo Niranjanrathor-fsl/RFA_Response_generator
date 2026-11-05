@@ -11,19 +11,89 @@ Serves whichever mode AUTH_MODE selects:
 from __future__ import annotations
 
 import logging
+import secrets
+import time
 
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Tuple
+from urllib.parse import urlencode
 
+import httpx
+from authlib.integrations.base_client.errors import OAuthError
+from authlib.jose.errors import JoseError
 from fastapi import APIRouter, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
 
-from ..auth import SESSION_USER_KEY, current_user, email_is_allowed, get_oauth, user_from_claims
-from ..config import get_settings
+from ..auth import (
+    SESSION_USER_KEY, current_user, email_is_allowed, get_oauth, register_session,
+    revoke_session, user_from_claims,
+)
+from ..access import AccessPolicyError, allowed_emails
+from ..config import BASE_DIR, get_settings
 from ..users import verify as verify_password
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
+templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
+
+
+def microsoft_login_page(request: Request, message: str = "", status_code: int = 200):
+    return templates.TemplateResponse(
+        request=request, name="login.html",
+        context={"message": message}, status_code=status_code,
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
+class MfaRequired(Exception):
+    """The sign-in did not satisfy multi-factor authentication."""
+
+
+def mfa_satisfied(claims: dict) -> bool:
+    amr = claims.get("amr")
+    return isinstance(amr, list) and "mfa" in amr
+
+
+def managed_access_granted(claims: dict, settings) -> bool:
+    """Entra-managed provisioning: group membership or app-role assignment."""
+    if "groups" in (claims.get("_claim_names") or {}):
+        log.warning("Group claim overage; cannot evaluate membership. Use app roles or fewer groups.")
+        return False
+    groups = {g.lower() for g in claims.get("groups") or [] if isinstance(g, str)}
+    roles = {r for r in claims.get("roles") or [] if isinstance(r, str)}
+    return bool(groups & set(settings.ms_group_ids)) or bool(roles & set(settings.ms_app_roles))
+
+
+async def microsoft_user(token: dict, settings) -> dict[str, str] | None:
+    claims = token.get("userinfo") or {}
+    if claims.get("tid") != settings.ms_tenant_id or not claims.get("oid") or not token.get("access_token"):
+        return None
+    if settings.ms_require_mfa and not mfa_satisfied(claims):
+        raise MfaRequired()
+    if settings.managed_provisioning and not managed_access_granted(claims, settings):
+        return None
+    # Do not authorize using mutable email/UPN claims in the ID token. Ask Graph
+    # for the signed-in directory account and bind its ID to the verified token.
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.get(
+            "https://graph.microsoft.com/v1.0/me",
+            params={"$select": "id,displayName,userPrincipalName,userType"},
+            headers={"Authorization": f"Bearer {token['access_token']}"},
+        )
+        response.raise_for_status()
+        profile = response.json()
+    if not isinstance(profile, dict) or profile.get("id") != claims["oid"] or profile.get("userType") != "Member":
+        return None
+    upn = profile.get("userPrincipalName")
+    if not isinstance(upn, str):
+        return None
+    if not settings.managed_provisioning and upn.strip().casefold() not in allowed_emails(settings):
+        return None
+    return {
+        "email": upn.strip().casefold(),
+        "name": profile.get("displayName") or "Firstsource user",
+    }
 
 
 # username -> (consecutive failures, when the lockout expires). In-process only:
@@ -130,10 +200,34 @@ async def login(request: Request):
         return RedirectResponse("/")
     if settings.auth_mode == "password":
         return _login_page()
+    if settings.auth_mode == "microsoft":
+        if current_user(request):
+            return RedirectResponse("/", status_code=303)
+        return microsoft_login_page(request)
     oauth = get_oauth(settings)
     if oauth is None:  # pragma: no cover - guarded by auth_mode above
         raise HTTPException(status_code=500, detail="SSO is not configured.")
     return await oauth.sso.authorize_redirect(request, settings.oidc_redirect_uri)
+
+
+@router.get("/microsoft")
+async def microsoft_login(request: Request):
+    settings = get_settings()
+    if settings.auth_mode != "microsoft":
+        raise HTTPException(status_code=404, detail="Not found.")
+    request.session.clear()
+    try:
+        if not settings.managed_provisioning:
+            allowed_emails(settings)
+        oauth = get_oauth(settings)
+        return await oauth.sso.authorize_redirect(
+            request, settings.oidc_redirect_uri, response_mode="query", prompt="select_account"
+        )
+    except AccessPolicyError:
+        log.error("Microsoft access policy is unavailable; refusing sign-in.")
+    except (OAuthError, httpx.HTTPError, ValueError) as exc:
+        log.warning("Microsoft sign-in initialization failed (%s).", type(exc).__name__)
+    return microsoft_login_page(request, "Sign-in is unavailable. Please contact your administrator.", 503)
 
 
 @router.get("/callback")
@@ -144,24 +238,60 @@ async def callback(request: Request):
         return RedirectResponse("/")
     oauth = get_oauth(settings)
     if oauth is None:
-        raise HTTPException(status_code=500, detail="SSO is not configured.")
+        raise HTTPException(status_code=404, detail="Not found.")
     try:
         token = await oauth.sso.authorize_access_token(request)
-    except Exception as exc:  # noqa: BLE001 - surface a readable error, log the detail
-        log.warning("OIDC callback failed: %s", exc)
+    except (OAuthError, JoseError, httpx.HTTPError, ValueError) as exc:
+        request.session.clear()
+        log.warning("OIDC callback validation failed (%s).", type(exc).__name__)
+        if settings.auth_mode == "microsoft":
+            return microsoft_login_page(
+                request, "Sign-in was cancelled, expired, or could not be verified. Please try again.", 401
+            )
         return HTMLResponse(
             "<h1>Sign-in failed</h1><p>Could not complete single sign-on. "
             '<a href="/auth/login">Try again</a>.</p>',
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
+    if settings.auth_mode == "microsoft":
+        request.session.clear()
+        try:
+            user = await microsoft_user(token, settings)
+        except MfaRequired:
+            log.warning("Microsoft sign-in refused: multi-factor authentication not satisfied.")
+            return microsoft_login_page(
+                request, "Multi-factor authentication is required. Complete MFA with your work account and try again.", 403
+            )
+        except (httpx.HTTPError, ValueError, AccessPolicyError) as exc:
+            log.warning("Microsoft directory/access verification failed (%s).", type(exc).__name__)
+            return microsoft_login_page(
+                request, "Unable to verify your access. Please contact your administrator.", 503
+            )
+        if user is None:
+            log.warning("Microsoft sign-in refused by the tenant/user access policy.")
+            return microsoft_login_page(
+                request, "Access denied. This application is available only to approved users. "
+                "Choose an approved work account or contact your administrator.", 403
+            )
+        request.session.update({
+            SESSION_USER_KEY: user,
+            "provider": "microsoft",
+            "tenant_id": settings.ms_tenant_id,
+            "object_id": token["userinfo"]["oid"],
+            "sid": register_session(token["userinfo"]["oid"], settings),
+            "authenticated_at": time.time(),
+            "csrf": secrets.token_urlsafe(32),
+        })
+        return RedirectResponse("/", status_code=303)
+
     claims = token.get("userinfo") or {}
     if not claims:
         try:
             claims = await oauth.sso.userinfo(token=token)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Could not fetch userinfo: %s", exc)
-            claims = {}
+        except (OAuthError, httpx.HTTPError, ValueError) as exc:
+            log.warning("Could not fetch userinfo (%s).", type(exc).__name__)
+            raise HTTPException(status_code=503, detail="The identity provider is unavailable.") from None
 
     user = user_from_claims(dict(claims))
     if not user["email"]:
@@ -186,12 +316,37 @@ async def callback(request: Request):
 
 @router.get("/logout")
 def logout(request: Request):
+    if get_settings().auth_mode == "microsoft":
+        raise HTTPException(status_code=405, detail="Use the sign-out button.", headers={"Allow": "POST"})
     if "session" in request.scope:
         request.session.clear()
     return RedirectResponse("/")
 
 
+@router.post("/logout")
+def microsoft_logout(request: Request, csrf: str = Form(...)):
+    settings = get_settings()
+    expected = request.session.get("csrf")
+    if (
+        settings.auth_mode != "microsoft" or not isinstance(expected, str)
+        or not secrets.compare_digest(csrf.encode(), expected.encode())
+        or request.headers.get("origin", settings.public_base_url.rstrip("/")) != settings.public_base_url.rstrip("/")
+    ):
+        log.warning("Rejected sign-out request with invalid CSRF protection.")
+        raise HTTPException(status_code=403, detail="Invalid sign-out request. Reload and try again.")
+    revoke_session(request.session.get("sid"))
+    request.session.clear()
+    return RedirectResponse(
+        settings.microsoft_authority + "/oauth2/v2.0/logout?"
+        + urlencode({"post_logout_redirect_uri": settings.public_base_url.rstrip("/") + "/"}),
+        status_code=303,
+    )
+
+
 @router.get("/me", response_model=None)
 def me(request: Request) -> dict:
     user = current_user(request)
-    return {"authenticated": user is not None, "user": user}
+    return {
+        "authenticated": user is not None, "user": user,
+        "csrf": request.session.get("csrf") if user else None,
+    }

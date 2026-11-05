@@ -246,6 +246,104 @@ cookies) and refuses to boot if the knowledge base is missing.
 
 ## Single sign-on
 
+### Microsoft SSO with approved-user access (default)
+
+`requirements-login.txt` lists only the login/SSO runtime dependencies, pinned
+to the same versions as `requirements.txt`. Install that subset with
+`python -m pip install -r requirements-login.txt`. It excludes AI, RAG, document
+processing and test packages. The complete generator still needs
+`requirements.txt` because its entry point imports those other features.
+The SSO integration reused existing dependencies; it did not add new packages
+to the original runtime requirements.
+
+`AUTH_MODE=microsoft` uses the existing FastAPI/Authlib stack and Firstsource
+frontend assets. The login page is at `/auth/login`, Microsoft authorization
+starts at `/auth/microsoft`, and `/auth/callback` returns approved users to the
+existing generator. No new frontend framework is required.
+
+The supplied **87-user** list is installed server-side at
+`access/d_and_above_dso.json`. It is not a public/static asset and is Git-ignored
+because it contains personal data. Include this private file in deployments
+(the Dockerfile copies `access/`) or mount it and set `AUTH_ALLOWED_USERS_FILE`.
+Its format is an array of `{"name": "...", "email": "..."}` records.
+
+```dotenv
+AUTH_MODE=microsoft
+AUTH_ALLOWED_USERS_FILE=access/d_and_above_dso.json
+MS_TENANT_ID=<directory-tenant-guid>
+MS_CLIENT_ID=<application-client-guid>
+MS_CLIENT_SECRET=<client-secret-value>
+PUBLIC_BASE_URL=http://localhost:8000
+SESSION_SECRET=<random-secret-at-least-32-characters>
+SESSION_COOKIE_NAME=fs_rfp_ms_session
+SESSION_HTTPS_ONLY=false
+```
+
+In the matching **Microsoft Entra app registration**:
+
+1. Register a **Web**, not SPA, redirect URI:
+   `http://localhost:8000/auth/callback` (or your deployed origin plus `/auth/callback`).
+2. Register `http://localhost:8000/` for the post-logout return.
+3. Add Microsoft Graph **delegated `User.Read`** and grant consent as required by
+   your tenant. SharePoint application permissions alone do not provide this
+   interactive permission. No directory-wide read permission is needed.
+4. Leave implicit grants disabled. Use a valid secret **value**, not its ID.
+
+Authlib validates state, nonce, token signature, issuer, audience and expiration;
+the authorization-code flow uses PKCE. The app requires the configured tenant,
+then asks Graph `/me` for the directory account, checks its ID against the
+verified token's `oid`, and requires a **Member** account whose
+`userPrincipalName` exactly matches an allowlisted email (case-insensitive).
+ID-token email/display-name claims, Graph mail aliases, and domain matches never
+grant access. If an attached email is only a mail alias rather than the person's
+work sign-in UPN, have your directory administrator verify the mapping before
+updating the list. Guests and unlisted users receive a branded access-denied page.
+
+The allowlist is checked again on every authenticated request, including
+generation, job status and rendering. Removing an entry blocks that user's
+existing session on the next request. Missing/empty/malformed lists fail closed.
+Changes to directory membership after login take effect at the next login;
+sessions have an absolute lifetime of `SESSION_MAX_AGE_SECONDS` (8 hours by
+default). Sessions are signed HttpOnly/SameSite=Lax cookies holding identity
+metadata, not access/refresh/ID tokens. Sign-out uses a CSRF-protected POST and
+Microsoft logout. As with other stateless signed cookies, a stolen cookie cannot
+be individually revoked by logout; use short lifetimes or a server-side session
+store if immediate individual-session revocation is required.
+
+Only keep `AUTH_MODE=microsoft` for this restricted deployment. Legacy
+`password`, `oidc`, and `disabled` modes remain available for other deployments
+and tests; they deliberately do **not** implement this Microsoft access policy.
+Keep the allowlist and configuration writable only by trusted administrators.
+For long-term access management, migrate the email roster to immutable Entra
+object IDs or assigned app roles, especially when accounts are renamed/reused.
+
+Local Windows startup from the project directory:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+```
+
+Stop any other app on port 8000 first, or change both the port and
+`PUBLIC_BASE_URL` and register the matching callback. Use `localhost` consistently
+in the browser so cookies return to the callback. `.env` is read from this
+project's directory, not its parent. The supplied parent `.env` is preserved;
+the local project copy enables Microsoft mode with a new session secret/cookie.
+
+Use HTTPS and `SESSION_HTTPS_ONLY=true` in production. Startup fails if Microsoft
+auth configuration is missing/unsafe. Access logs are disabled in the provided
+launch commands to avoid recording callback authorization codes; redact query
+strings in any reverse proxy/platform logs too.
+
+Tests: `python -m pytest -q tests/test_auth.py tests/test_auth_password.py tests/test_auth_microsoft.py`.
+Microsoft tests use a signed local OIDC provider double and mocked Graph; they
+exercise cryptographic token validation without real user credentials.
+
+Reference: [Microsoft identity claim validation guidance](https://learn.microsoft.com/entra/identity-platform/claims-validation).
+
+### Legacy generic OIDC
+
 `AUTH_MODE=oidc` enables OpenID Connect. It is wired for Microsoft Entra ID
 (Azure AD) and works with any compliant provider. No code changes are needed —
 your engineering team supplies four values.

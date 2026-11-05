@@ -15,3 +15,6 @@ deploy.zip
 .DS_Store
 *.log
 users.json
+access/*.json
+myenvv/
+test_new.py

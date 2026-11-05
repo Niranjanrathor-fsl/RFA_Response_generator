@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY knowledge/ ./knowledge/
 COPY static/ ./static/
+COPY access/ ./access/
 
 # Run as a non-root user.
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
@@ -34,4 +35,4 @@ sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4
 
 # --workers 2 suits a team-sized load. Raise it if many people generate at once;
 # each worker holds its own copy of the knowledge base (~50 KB), so it is cheap.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers", "--forwarded-allow-ips", "*"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--no-access-log", "--proxy-headers", "--forwarded-allow-ips", "*"]
