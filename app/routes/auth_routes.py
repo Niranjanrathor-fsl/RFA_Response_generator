@@ -70,6 +70,7 @@ async def microsoft_user(token: dict, settings) -> dict[str, str] | None:
     if claims.get("tid") != settings.ms_tenant_id or not claims.get("oid") or not token.get("access_token"):
         return None
     if settings.ms_require_mfa and not mfa_satisfied(claims):
+        log.warning("MFA claim check failed: amr=%s acr=%s", claims.get("amr"), claims.get("acr"))
         raise MfaRequired()
     if settings.managed_provisioning and not managed_access_granted(claims, settings):
         return None
