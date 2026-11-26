@@ -9,8 +9,10 @@
 #  - --timeout 600 stops gunicorn from killing long LLM calls (default is 30s).
 #  - Azure sets $PORT; bind to it. Falls back to 8000 for local parity.
 #  - Keep 1 worker: Microsoft SSO sessions live in process memory, so several
-#    workers (or App Service instances) would log users out at random. Generation
-#    runs in threads, so one worker still serves concurrent users.
+#    workers (or App Service instances) would log users out at random. Each
+#    worker also loads its own copy of the reranker (~2.4 GB) and the shared B3
+#    plan has 7 GB. Generation runs as background jobs in threads, so one worker
+#    still serves several users at once.
 
 gunicorn app.main:app \
     --worker-class uvicorn.workers.UvicornWorker \

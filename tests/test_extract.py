@@ -280,6 +280,50 @@ def test_unreadable_image_explains_itself_rather_than_failing(monkeypatch):
     assert "image" in doc.note.lower()
 
 
+def _docx_with_repeated_picture(copies: int, distinct_png: bytes | None = None) -> bytes:
+    """A Word file holding the same picture `copies` times under DIFFERENT part
+    names - what form-style documents do for every checkbox. python-docx itself
+    would share one part, so the copies are related by hand."""
+    from docx import Document
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.opc.packuri import PackURI
+    from docx.parts.image import ImagePart
+
+    document = Document()
+    document.add_paragraph("Q1. Do you support 24x7 delivery?")
+    blob = _png_bytes()
+    for i in range(copies):
+        part = ImagePart(PackURI(f"/word/media/checkbox{i}.png"), "image/png", blob, document.part.package)
+        document.part.relate_to(part, RT.IMAGE)
+    if distinct_png is not None:
+        part = ImagePart(PackURI("/word/media/chart.png"), "image/png", distinct_png, document.part.package)
+        document.part.relate_to(part, RT.IMAGE)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def test_a_picture_repeated_under_different_names_is_read_once(monkeypatch):
+    import app.document_sections as ds
+    from app.config import get_settings
+
+    calls = []
+
+    def fake_vision(blob, **kwargs):
+        calls.append(blob)
+        return f"Picture {len(calls)}"
+
+    monkeypatch.setattr(ds, "describe_or_skip", fake_vision)
+    settings = get_settings().model_copy(update={"rag_vision_enabled": True})
+
+    data = _docx_with_repeated_picture(copies=50, distinct_png=_png_bytes(120, 90))
+    sections = ds.extract_docx_sections(data, settings)
+
+    assert len(calls) == 2  # the checkbox once, the different chart once
+    assert [text for label, text in sections if label.startswith("Image")] == ["Picture 1", "Picture 2"]
+    assert "24x7" in sections[0][1]
+
+
 def test_config_groups_extensions_for_display():
     """The UI showed the alphabetically-first 8 extensions, which is meaningless
     to a user. The server should hand over a curated, ordered list instead."""

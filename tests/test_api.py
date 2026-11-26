@@ -289,10 +289,34 @@ def test_job_returns_the_same_result_as_generate(client, stub_llm, job_dir):
     assert job["result"]["model"] == "stub-model"
 
 
-def test_job_rejects_unreadable_input_immediately(client, stub_llm, job_dir):
+def test_job_rejects_empty_input_immediately(client, stub_llm, job_dir):
     response = client.post("/api/jobs", data={"pasted": "   "})
     assert response.status_code == 400
     assert list(job_dir.glob("*.json")) == []
+
+
+def test_job_rejects_too_many_files_immediately(client, stub_llm, job_dir, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "max_files", 2)
+    files = [("files", (f"f{i}.txt", b"content", "text/plain")) for i in range(3)]
+    response = client.post("/api/jobs", files=files)
+    assert response.status_code == 413
+    assert list(job_dir.glob("*.json")) == []
+
+
+def test_job_reads_files_in_the_background_and_reports_unreadable_ones(client, stub_llm, job_dir):
+    """Reading a file can take minutes (every embedded image goes to vision), so it
+    must happen inside the job - not in the request Azure cuts off at ~230 s."""
+    response = client.post(
+        "/api/jobs", files=[("files", ("old.doc", b"\xd0\xcf\x11\xe0 legacy", "application/msword"))]
+    )
+    assert response.status_code == 202
+
+    job = _wait_for_job(client, response.json()["job_id"])
+    assert job["status"] == "error"
+    assert job["status_code"] == 400
+    assert "old.doc" in job["detail"]
 
 
 def test_job_failure_keeps_the_status_code_and_message(client, job_dir, monkeypatch):
@@ -325,17 +349,32 @@ def test_job_is_invisible_to_another_user(job_dir):
     assert jobs.get("abc", "b@x.com") is None
 
 
-def test_job_lost_to_a_restart_reports_an_error(job_dir):
+def test_job_whose_heartbeat_stopped_reports_an_error(job_dir):
+    """The worker running it was killed (e.g. out of memory): no more heartbeats."""
+    import os
+    import time
+
+    from app import jobs
+
+    path = job_dir / "abc.json"
+    started = time.time() - 600
+    path.write_text(json.dumps({"status": "running", "owner": "a@x.com", "started": started}))
+    os.utime(path, (started, started))
+
+    job = jobs.get("abc", "a@x.com")
+    assert job["status"] == "error"
+    assert "interrupted" in job["detail"]
+
+
+def test_long_job_with_a_live_heartbeat_is_still_running(job_dir):
     import time
 
     from app import jobs
 
     (job_dir / "abc.json").write_text(
-        json.dumps({"status": "running", "owner": "a@x.com", "started": time.time() - 3 * 3600})
+        json.dumps({"status": "running", "owner": "a@x.com", "started": time.time() - 3600})
     )
-    job = jobs.get("abc", "a@x.com")
-    assert job["status"] == "error"
-    assert "interrupted" in job["detail"]
+    assert jobs.get("abc", "a@x.com")["status"] == "running"
 
 
 def test_summary_mode_detected_when_no_questions(client, monkeypatch):

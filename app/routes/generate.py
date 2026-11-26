@@ -17,7 +17,7 @@ browser starts a job and polls it (see app/jobs.py).
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
@@ -69,7 +69,9 @@ def _question_label(question: DetectedQuestion) -> str:
     return question.text + (f" ({'; '.join(details)})" if details else "")
 
 
-async def _read_uploads(files: Optional[Sequence[UploadFile]]) -> List[ExtractedDocument]:
+async def _receive_uploads(files: Optional[Sequence[UploadFile]]) -> List[Tuple[str, bytes]]:
+    """(filename, bytes) for each upload, after the count/size limits and dropping
+    exact duplicates. Fast - nothing is parsed yet."""
     settings = get_settings()
     real_files = [f for f in (files or []) if f and f.filename]
     if len(real_files) > settings.max_files:
@@ -78,7 +80,7 @@ async def _read_uploads(files: Optional[Sequence[UploadFile]]) -> List[Extracted
             detail=f"Too many files: {len(real_files)}. The limit is {settings.max_files}.",
         )
 
-    documents: List[ExtractedDocument] = []
+    received: List[Tuple[str, bytes]] = []
     seen: set[tuple[str, int]] = set()
     for upload in real_files:
         # Reject on the declared size first - reading a huge part into memory
@@ -107,22 +109,26 @@ async def _read_uploads(files: Optional[Sequence[UploadFile]]) -> List[Extracted
             log.info("Skipping duplicate upload %s", upload.filename)
             continue
         seen.add(key)
+        received.append((upload.filename, data))
+    return received
+
+
+async def _extract_sources(received: Sequence[Tuple[str, bytes]], pasted: str) -> List[ExtractedDocument]:
+    """The uploads' text plus any pasted text, or a 400 if none of it is readable.
+
+    Slow for some files - every embedded image is read by the vision model - so
+    the browser's path runs this inside the background job, not the request.
+    """
+    documents: List[ExtractedDocument] = []
+    for filename, data in received:
         try:
             # Parsing a large PDF/PPTX is CPU-bound; keep it off the event loop.
-            documents.append(await run_in_threadpool(extract_text, upload.filename, data))
+            documents.append(await run_in_threadpool(extract_text, filename, data))
         except ExtractionError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"{upload.filename}: {exc}",
+                detail=f"{filename}: {exc}",
             ) from exc
-    return documents
-
-
-async def _read_sources(
-    files: Optional[Sequence[UploadFile]], pasted: str
-) -> List[ExtractedDocument]:
-    """The uploads plus any pasted text, or a 400 if none of it is readable."""
-    documents = await _read_uploads(files)
 
     pasted = (pasted or "").strip()
     if pasted:
@@ -151,7 +157,7 @@ async def generate_document(
 ) -> GenerateResult:
     """Generate in one request. Fine locally; behind Azure's ~230 s request limit
     use /api/jobs instead, which is what the browser does."""
-    usable = await _read_sources(files, pasted)
+    usable = await _extract_sources(await _receive_uploads(files), pasted)
     return await _generate(usable, title, audience, user)
 
 
@@ -165,10 +171,23 @@ async def start_generation_job(
 ) -> Dict[str, str]:
     """Same as /generate, but returns a job id at once; poll GET /api/jobs/{id}.
 
-    Uploads are read before returning, so a bad file still fails immediately.
+    Limits (file count, size) and empty input fail immediately. Reading the files
+    happens inside the job: a Word file with 200 embedded images took 5+ minutes
+    to read and hit Azure's request limit when this was done up front.
     """
-    usable = await _read_sources(files, pasted)
-    job_id = jobs.start(_owner(user), lambda: _generate(usable, title, audience, user))
+    received = await _receive_uploads(files)
+    if not received and not (pasted or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No readable text found. Add at least one document with selectable "
+                   "text, or paste the content directly. Files received: none.",
+        )
+
+    async def work() -> GenerateResult:
+        usable = await _extract_sources(received, pasted)
+        return await _generate(usable, title, audience, user)
+
+    job_id = jobs.start(_owner(user), work)
     return {"job_id": job_id}
 
 
