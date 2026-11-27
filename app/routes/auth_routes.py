@@ -16,7 +16,7 @@ import time
 
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Tuple
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 from authlib.integrations.base_client.errors import OAuthError
@@ -65,18 +65,28 @@ def managed_access_granted(claims: dict, settings) -> bool:
     return bool(groups & set(settings.ms_group_ids)) or bool(roles & set(settings.ms_app_roles))
 
 
-async def microsoft_user(token: dict, settings) -> dict[str, str] | None:
+async def microsoft_user(token: dict, settings, attempt_id: str = "unknown") -> dict[str, str] | None:
     claims = token.get("userinfo") or {}
     if claims.get("tid") != settings.ms_tenant_id or not claims.get("oid") or not token.get("access_token"):
+        log.warning(
+            "Microsoft sign-in verification failed: attempt=%s reason=invalid_token_claims tenant_matches=%s object_id_present=%s access_token_present=%s",
+            attempt_id, claims.get("tid") == settings.ms_tenant_id, bool(claims.get("oid")), bool(token.get("access_token")),
+        )
         return None
+    log.info("Microsoft sign-in token claims verified: attempt=%s mfa_required=%s managed_access=%s",
+             attempt_id, settings.ms_require_mfa, settings.managed_provisioning)
     if settings.ms_require_mfa and not mfa_satisfied(claims):
-        log.warning("MFA claim check failed: amr=%s acr=%s", claims.get("amr"), claims.get("acr"))
+        log.warning("Microsoft sign-in verification failed: attempt=%s reason=mfa_required", attempt_id)
         raise MfaRequired()
+    if settings.ms_require_mfa:
+        log.info("Microsoft sign-in MFA verified: attempt=%s", attempt_id)
     if settings.managed_provisioning and not managed_access_granted(claims, settings):
+        log.warning("Microsoft sign-in verification failed: attempt=%s reason=managed_access_denied", attempt_id)
         return None
     # Do not authorize using mutable email/UPN claims in the ID token. Ask Graph
     # for the signed-in directory account and bind its ID to the verified token.
     async with httpx.AsyncClient(timeout=15) as client:
+        log.info("Microsoft sign-in directory lookup started: attempt=%s", attempt_id)
         response = await client.get(
             "https://graph.microsoft.com/v1.0/me",
             params={"$select": "id,displayName,userPrincipalName,userType"},
@@ -84,13 +94,24 @@ async def microsoft_user(token: dict, settings) -> dict[str, str] | None:
         )
         response.raise_for_status()
         profile = response.json()
-    if not isinstance(profile, dict) or profile.get("id") != claims["oid"] or profile.get("userType") != "Member":
+    log.info("Microsoft sign-in directory lookup completed: attempt=%s status=%s", attempt_id, response.status_code)
+    if not isinstance(profile, dict):
+        log.warning("Microsoft sign-in verification failed: attempt=%s reason=invalid_directory_profile", attempt_id)
+        return None
+    if profile.get("id") != claims["oid"]:
+        log.warning("Microsoft sign-in verification failed: attempt=%s reason=directory_id_mismatch", attempt_id)
+        return None
+    if profile.get("userType") != "Member":
+        log.warning("Microsoft sign-in verification failed: attempt=%s reason=directory_account_not_member", attempt_id)
         return None
     upn = profile.get("userPrincipalName")
     if not isinstance(upn, str):
+        log.warning("Microsoft sign-in verification failed: attempt=%s reason=missing_directory_upn", attempt_id)
         return None
-    if not settings.managed_provisioning and upn.strip().casefold() not in allowed_emails(settings):
+    if settings.use_microsoft_allowlist and upn.strip().casefold() not in allowed_emails(settings):
+        log.warning("Microsoft sign-in verification failed: attempt=%s reason=not_allowlisted", attempt_id)
         return None
+    log.info("Microsoft sign-in access approved: attempt=%s policy=%s", attempt_id, settings.microsoft_access_policy)
     return {
         "email": upn.strip().casefold(),
         "name": profile.get("displayName") or "Firstsource user",
@@ -197,12 +218,14 @@ def password_login(
 @router.get("/login")
 async def login(request: Request):
     settings = get_settings()
+    log.info("Login page requested: mode=%s", settings.auth_mode)
     if settings.auth_mode == "disabled":
         return RedirectResponse("/")
     if settings.auth_mode == "password":
         return _login_page()
     if settings.auth_mode == "microsoft":
         if current_user(request):
+            log.info("Microsoft login page skipped: already_authenticated=true")
             return RedirectResponse("/", status_code=303)
         return microsoft_login_page(request)
     oauth = get_oauth(settings)
@@ -215,36 +238,55 @@ async def login(request: Request):
 async def microsoft_login(request: Request):
     settings = get_settings()
     if settings.auth_mode != "microsoft":
+        log.warning("Microsoft sign-in request rejected: reason=wrong_auth_mode mode=%s", settings.auth_mode)
         raise HTTPException(status_code=404, detail="Not found.")
+    configured_origin = urlsplit(settings.public_base_url.rstrip("/"))
+    if (request.url.scheme, request.url.netloc.lower()) != (configured_origin.scheme, configured_origin.netloc.lower()):
+        log.info("Microsoft sign-in redirected to configured origin: reason=origin_mismatch")
+        return RedirectResponse(settings.public_base_url.rstrip("/") + "/auth/microsoft", status_code=303)
     request.session.clear()
+    attempt_id = secrets.token_hex(8)
+    request.session["login_attempt_id"] = attempt_id
+    log.info("Microsoft sign-in started: attempt=%s policy=%s mfa_required=%s", attempt_id,
+             settings.microsoft_access_policy, settings.ms_require_mfa)
     try:
-        if not settings.managed_provisioning:
+        if settings.use_microsoft_allowlist:
             allowed_emails(settings)
+            log.info("Microsoft sign-in allowlist available: attempt=%s", attempt_id)
         oauth = get_oauth(settings)
-        return await oauth.sso.authorize_redirect(
+        response = await oauth.sso.authorize_redirect(
             request, settings.oidc_redirect_uri, response_mode="query", prompt="select_account"
         )
+        log.info("Microsoft sign-in redirect issued: attempt=%s", attempt_id)
+        return response
     except AccessPolicyError:
-        log.error("Microsoft access policy is unavailable; refusing sign-in.")
+        log.error("Microsoft sign-in initialization failed: attempt=%s reason=access_policy_unavailable", attempt_id)
     except (OAuthError, httpx.HTTPError, ValueError) as exc:
-        log.warning("Microsoft sign-in initialization failed (%s).", type(exc).__name__)
+        log.warning("Microsoft sign-in initialization failed: attempt=%s error_type=%s status=%s", attempt_id,
+                    type(exc).__name__, getattr(getattr(exc, "response", None), "status_code", None))
     return microsoft_login_page(request, "Sign-in is unavailable. Please contact your administrator.", 503)
 
 
 @router.get("/callback")
 async def callback(request: Request):
     settings = get_settings()
+    attempt_id = request.session.get("login_attempt_id", "unknown")
     if settings.auth_mode == "disabled":
         # Reachable without auth; must not surface a 500.
         return RedirectResponse("/")
     oauth = get_oauth(settings)
     if oauth is None:
         raise HTTPException(status_code=404, detail="Not found.")
+    log.info("Sign-in callback received: attempt=%s mode=%s", attempt_id, settings.auth_mode)
     try:
         token = await oauth.sso.authorize_access_token(request)
     except (OAuthError, JoseError, httpx.HTTPError, ValueError) as exc:
         request.session.clear()
-        log.warning("OIDC callback validation failed (%s).", type(exc).__name__)
+        error_code = getattr(exc, "error", None)
+        if error_code not in {"access_denied", "invalid_request", "invalid_grant", "unauthorized_client", "server_error", "temporarily_unavailable"}:
+            error_code = "other" if error_code else "none"
+        log.warning("OIDC callback validation failed: attempt=%s error_type=%s oauth_error=%s status=%s", attempt_id,
+                    type(exc).__name__, error_code, getattr(getattr(exc, "response", None), "status_code", None))
         if settings.auth_mode == "microsoft":
             return microsoft_login_page(
                 request, "Sign-in was cancelled, expired, or could not be verified. Please try again.", 401
@@ -257,20 +299,22 @@ async def callback(request: Request):
 
     if settings.auth_mode == "microsoft":
         request.session.clear()
+        log.info("Microsoft sign-in token exchange completed: attempt=%s", attempt_id)
         try:
-            user = await microsoft_user(token, settings)
+            user = await microsoft_user(token, settings, attempt_id)
         except MfaRequired:
-            log.warning("Microsoft sign-in refused: multi-factor authentication not satisfied.")
+            log.warning("Microsoft sign-in refused: attempt=%s reason=mfa_required", attempt_id)
             return microsoft_login_page(
                 request, "Multi-factor authentication is required. Complete MFA with your work account and try again.", 403
             )
         except (httpx.HTTPError, ValueError, AccessPolicyError) as exc:
-            log.warning("Microsoft directory/access verification failed (%s).", type(exc).__name__)
+            log.warning("Microsoft directory/access verification failed: attempt=%s error_type=%s status=%s", attempt_id,
+                        type(exc).__name__, getattr(getattr(exc, "response", None), "status_code", None))
             return microsoft_login_page(
                 request, "Unable to verify your access. Please contact your administrator.", 503
             )
         if user is None:
-            log.warning("Microsoft sign-in refused by the tenant/user access policy.")
+            log.warning("Microsoft sign-in refused: attempt=%s reason=access_policy", attempt_id)
             return microsoft_login_page(
                 request, "Access denied. This application is available only to approved users. "
                 "Choose an approved work account or contact your administrator.", 403
@@ -284,6 +328,7 @@ async def callback(request: Request):
             "authenticated_at": time.time(),
             "csrf": secrets.token_urlsafe(32),
         })
+        log.info("Microsoft sign-in completed: attempt=%s session_created=true", attempt_id)
         return RedirectResponse("/", status_code=303)
 
     claims = token.get("userinfo") or {}
@@ -337,6 +382,7 @@ def microsoft_logout(request: Request, csrf: str = Form(...)):
         raise HTTPException(status_code=403, detail="Invalid sign-out request. Reload and try again.")
     revoke_session(request.session.get("sid"))
     request.session.clear()
+    log.info("Microsoft sign-out completed: session_revoked=true")
     return RedirectResponse(
         settings.microsoft_authority + "/oauth2/v2.0/logout?"
         + urlencode({"post_logout_redirect_uri": settings.public_base_url.rstrip("/") + "/"}),

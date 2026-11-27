@@ -2,7 +2,7 @@
 
 Modes, chosen with the AUTH_MODE environment variable:
 
-* ``microsoft`` - tenant-specific Microsoft SSO with an exact user allowlist.
+* ``microsoft`` - tenant-specific Microsoft SSO with configurable access policy.
 * ``disabled`` - no login. Only appropriate when the app is reachable solely from
   the internal network or VPN.
 * ``password`` - username and password, checked against a JSON file of salted
@@ -168,7 +168,7 @@ def current_user(request: Request) -> Optional[Dict[str, str]]:
             revoke_session(session.get("sid"))
             session.clear()
             return None
-        if settings.managed_provisioning:
+        if not settings.use_microsoft_allowlist:
             return user
         try:
             permitted = user.get("email", "").casefold() in allowed_emails(settings)

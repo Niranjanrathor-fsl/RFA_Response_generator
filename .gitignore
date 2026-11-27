@@ -14,7 +14,9 @@ build/
 deploy.zip
 .DS_Store
 *.log
+logs/
 users.json
+d_and_above_dso.json
 access/*.json
 myenvv/
 test_new.py

@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
+import re
 import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
@@ -185,6 +187,40 @@ def test_managed_provisioning_by_app_role(microsoft):
     assert finish(microsoft).status_code == 303
 
 
+def test_allowlist_can_be_disabled_for_tenant_members(microsoft, monkeypatch):
+    microsoft["settings"].auth_use_allowlist = False
+    microsoft["allowlist"].unlink()
+    microsoft["profile"]["userPrincipalName"] = "unlisted@example.com"
+
+    def unexpected_allowlist_read(settings):
+        raise AssertionError("Allowlist must not be read when disabled")
+
+    for module in ("app.main", "app.auth", "app.routes.auth_routes"):
+        monkeypatch.setattr(f"{module}.allowed_emails", unexpected_allowlist_read)
+    from app.main import create_app
+    create_app()
+    assert finish(microsoft).status_code == 303
+    assert microsoft["client"].get("/auth/me").json()["authenticated"] is True
+
+
+@pytest.mark.parametrize("changes", [
+    {"claims": {"tid": "other-tenant"}},
+    {"claims": {"amr": ["pwd"]}},
+    {"profile": {"userType": "Guest"}},
+])
+def test_disabling_allowlist_preserves_microsoft_checks(microsoft, changes):
+    microsoft["settings"].auth_use_allowlist = False
+    for name, value in changes.items():
+        microsoft[name].update(value)
+    assert finish(microsoft).status_code == 403
+
+
+def test_managed_provisioning_still_applies_when_allowlist_disabled(microsoft):
+    microsoft["settings"].auth_use_allowlist = False
+    microsoft["settings"].ms_allowed_group_ids = GROUP_ID
+    assert finish(microsoft).status_code == 403
+
+
 @pytest.mark.parametrize("claims", [{}, {"groups": ["22222222-2222-2222-2222-222222222222"]},
                                     {"_claim_names": {"groups": "src1"}}])
 def test_managed_provisioning_denies_unassigned(microsoft, claims):
@@ -237,6 +273,16 @@ def test_branded_login_and_assets(microsoft):
     assert client.post("/auth/login", data={"username": "allowed@example.com", "password": "any"}).status_code == 404
 
 
+def test_sign_in_uses_configured_origin_before_creating_session(microsoft):
+    client = microsoft["client"]
+    response = client.get("http://127.0.0.1:8000/auth/microsoft")
+    assert response.status_code == 303
+    assert response.headers["location"] == "http://localhost:8000/auth/microsoft"
+    assert "set-cookie" not in response.headers
+    assert finish(microsoft).status_code == 303
+    assert client.get("/auth/me").json()["authenticated"] is True
+
+
 @pytest.mark.parametrize("method,url", [
     ("post", "/api/generate"), ("post", "/api/jobs"),
     ("get", "/api/jobs/other-job"), ("post", "/api/render/docx"),
@@ -265,6 +311,43 @@ def test_allowed_user_gets_session_without_tokens(microsoft):
     assert "code_verifier" not in payload
     assert "httponly" in response.headers["set-cookie"].lower()
     assert "samesite=lax" in response.headers["set-cookie"].lower()
+
+
+def test_sign_in_logs_correlated_stages_without_secrets_or_identity(microsoft, caplog):
+    caplog.set_level(logging.INFO, logger="app.routes.auth_routes")
+    assert microsoft["client"].get("/auth/login").status_code == 200
+    assert finish(microsoft).status_code == 303
+    messages = [record.getMessage() for record in caplog.records if record.name == "app.routes.auth_routes"]
+    combined = "\n".join(messages)
+    assert "Login page requested: mode=microsoft" in combined
+    assert "Microsoft sign-in redirect issued" in combined
+    assert "Microsoft sign-in token exchange completed" in combined
+    assert "Microsoft sign-in directory lookup completed" in combined
+    assert "Microsoft sign-in access approved" in combined
+    assert "Microsoft sign-in completed" in combined
+    attempt_ids = set(re.findall(r"attempt=([0-9a-f]{16})", combined))
+    assert len(attempt_ids) == 1
+    for sensitive in ("test-client-secret", "test-graph-token", "test-code", "allowed@example.com", OBJECT_ID):
+        assert sensitive not in combined
+
+
+def test_sign_in_logs_denial_reason_without_user_identity(microsoft, caplog):
+    caplog.set_level(logging.INFO, logger="app.routes.auth_routes")
+    microsoft["profile"]["userPrincipalName"] = "outsider@example.com"
+    assert finish(microsoft).status_code == 403
+    combined = "\n".join(record.getMessage() for record in caplog.records if record.name == "app.routes.auth_routes")
+    assert "reason=not_allowlisted" in combined
+    assert "outsider@example.com" not in combined
+
+
+def test_sign_in_logs_graph_failure_status(microsoft, caplog):
+    caplog.set_level(logging.INFO, logger="app.routes.auth_routes")
+    microsoft["graph_status"] = 503
+    assert finish(microsoft).status_code == 503
+    combined = "\n".join(record.getMessage() for record in caplog.records if record.name == "app.routes.auth_routes")
+    assert "Microsoft directory/access verification failed" in combined
+    assert "status=503" in combined
+    assert "test-graph-token" not in combined
 
 
 @pytest.mark.parametrize("profile", [
@@ -317,13 +400,14 @@ def test_wrong_state_and_callback_replay_denied(microsoft):
     assert finish(microsoft, state).status_code == 401
 
 
-def test_cancelled_and_missing_flow_fail_cleanly(microsoft):
+def test_cancelled_and_missing_flow_fail_cleanly(microsoft, caplog):
     client = microsoft["client"]
     assert client.get("/auth/callback?code=test").status_code == 401
     state = begin(microsoft)
     response = client.get("/auth/callback", params={"state": state, "error": "access_denied"})
     assert response.status_code == 401
     assert "cancelled" in response.text
+    assert "oauth_error=access_denied" in caplog.text
 
 
 def test_graph_failure_and_broken_policy_fail_closed(microsoft):

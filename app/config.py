@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "INFO"
+    log_file: str = ""
     # Public base URL of the deployment. Used to build the OIDC redirect URI.
     # Local: http://localhost:8000   Server: https://rfp.firstsource.com
     public_base_url: str = "http://localhost:8000"
@@ -188,8 +189,9 @@ class Settings(BaseSettings):
     # "password" -> username/password against a JSON file on the server. For
     #               deployments with no identity provider available.
     # "oidc"     -> Azure AD / any OpenID Connect provider (see README)
-    # Microsoft mode additionally requires an exact, server-held user allowlist.
+    # Microsoft mode uses an exact, server-held user allowlist by default.
     auth_mode: Literal["disabled", "password", "oidc", "microsoft"] = "microsoft"
+    auth_use_allowlist: bool = True
     auth_allowed_users_file: str = "access/d_and_above_dso.json"
     # Where password users live. Holds salted scrypt hashes, never plaintext.
     auth_users_file: str = "users.json"
@@ -279,6 +281,16 @@ class Settings(BaseSettings):
     @property
     def managed_provisioning(self) -> bool:
         return bool(self.ms_group_ids or self.ms_app_roles)
+
+    @property
+    def use_microsoft_allowlist(self) -> bool:
+        return self.auth_use_allowlist and not self.managed_provisioning
+
+    @property
+    def microsoft_access_policy(self) -> str:
+        if self.managed_provisioning:
+            return "managed"
+        return "allowlist" if self.use_microsoft_allowlist else "tenant_members"
 
     @property
     def microsoft_authority(self) -> str:

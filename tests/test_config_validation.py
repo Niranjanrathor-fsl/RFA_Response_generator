@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from app.config import Settings
 
 
@@ -45,3 +49,27 @@ def test_defaults_are_conservative():
     assert settings.rag_sync_interval_minutes == 15
     assert settings.rag_sync_full_reconcile_hours == 24
     assert settings.rag_skip_duplicate_content is True
+
+
+@pytest.mark.parametrize("value,expected", [("true", True), ("false", False)])
+def test_allowlist_switch_loaded_from_environment(monkeypatch, value, expected):
+    monkeypatch.setenv("AUTH_USE_ALLOWLIST", value)
+    assert Settings(_env_file=None).auth_use_allowlist is expected
+
+
+def test_application_file_logging_excludes_access_logs_and_avoids_duplicates(tmp_path):
+    from app.main import configure_logging
+
+    path = tmp_path / "logs" / "app.log"
+    try:
+        configure_logging("INFO", str(path))
+        configure_logging("INFO", str(path))
+        logging.getLogger("app.routes.auth_routes").info("Login event for logging test")
+        logging.getLogger("uvicorn.access").info("sensitive callback URL")
+        logging.getLogger("httpx").info("sensitive external URL")
+        content = path.read_text(encoding="utf-8")
+        assert content.count("Login event for logging test") == 1
+        assert "sensitive callback URL" not in content
+        assert "sensitive external URL" not in content
+    finally:
+        configure_logging("INFO")

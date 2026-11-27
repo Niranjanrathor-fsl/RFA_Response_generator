@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -19,24 +20,39 @@ from starlette.middleware.sessions import SessionMiddleware
 from . import __version__
 from .access import allowed_emails
 from .auth import current_user
-from .config import get_settings
+from .config import BASE_DIR, get_settings
 from .knowledge import KnowledgeBaseError, get_knowledge_base
 from .routes import auth_routes, generate, health
 
 log = logging.getLogger("app")
 
 
-def configure_logging(level: str) -> None:
+def configure_logging(level: str, log_file: str = "") -> None:
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
+    log.setLevel(level)
+    for handler in list(log.handlers):
+        if handler.get_name() == "app-file":
+            log.removeHandler(handler)
+            handler.close()
+    if log_file:
+        path = Path(log_file)
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
+        handler.set_name("app-file")
+        handler.setLevel(level)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
+        log.addHandler(handler)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, settings.log_file)
     log.info("%s v%s starting (environment=%s)", settings.app_name, __version__, settings.environment)
 
     for problem in settings.startup_problems():
@@ -66,7 +82,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     settings.validate_microsoft_auth()
-    if settings.auth_mode == "microsoft" and not settings.managed_provisioning:
+    if settings.auth_mode == "microsoft" and settings.use_microsoft_allowlist:
         allowed_emails(settings)
     app = FastAPI(
         title=settings.app_name,

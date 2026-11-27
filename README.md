@@ -228,6 +228,7 @@ ones that matter most:
 | `ANTHROPIC_ENABLE_PROMPT_CACHE` | `true` | Caches the knowledge base between calls. |
 | `ANTHROPIC_MAX_RETRIES` | `1` | SDK-level retries. Kept low so a timeout cannot compound. |
 | `ENVIRONMENT` | `local` | `production` turns on extra config warnings. |
+| `LOG_FILE` | *(none)* | Optional application log file, relative to the project directory; rotates at 5 MB with three backups. |
 | `PUBLIC_BASE_URL` | `http://localhost:8000` | Must match the real URL exactly; the SSO redirect URI is derived from it. |
 | `PORT` | `8000` | |
 | `AUTH_MODE` | `disabled` | `disabled` or `oidc`. |
@@ -269,6 +270,7 @@ Its format is an array of `{"name": "...", "email": "..."}` records.
 
 ```dotenv
 AUTH_MODE=microsoft
+AUTH_USE_ALLOWLIST=true
 AUTH_ALLOWED_USERS_FILE=access/d_and_above_dso.json
 MS_TENANT_ID=<directory-tenant-guid>
 # Sign-in app registration (separate from the SharePoint app below)
@@ -294,16 +296,20 @@ In the matching **Microsoft Entra app registration**:
 Authlib validates state, nonce, token signature, issuer, audience and expiration;
 the authorization-code flow uses PKCE. The app requires the configured tenant,
 then asks Graph `/me` for the directory account, checks its ID against the
-verified token's `oid`, and requires a **Member** account whose
-`userPrincipalName` exactly matches an allowlisted email (case-insensitive).
+verified token's `oid`, and requires a **Member** account. By default, its
+`userPrincipalName` must exactly match an allowlisted email (case-insensitive).
 ID-token email/display-name claims, Graph mail aliases, and domain matches never
 grant access. If an attached email is only a mail alias rather than the person's
 work sign-in UPN, have your directory administrator verify the mapping before
-updating the list. Guests and unlisted users receive a branded access-denied page.
+updating the list. Guests are denied, as are unlisted users when the allowlist is enabled.
 
-The allowlist is checked again on every authenticated request, including
+When `AUTH_USE_ALLOWLIST=true`, the allowlist is checked again on every authenticated request, including
 generation, job status and rendering. Removing an entry blocks that user's
 existing session on the next request. Missing/empty/malformed lists fail closed.
+Set `AUTH_USE_ALLOWLIST=false` to skip the file entirely; without configured Entra
+groups or app roles, this allows any qualifying member of the configured tenant.
+Tenant, MFA (when enabled), and Microsoft Graph member/identity checks still apply.
+Configured Entra group or app-role restrictions take precedence over this switch.
 Changes to directory membership after login take effect at the next login;
 sessions have an absolute lifetime of `SESSION_MAX_AGE_SECONDS` (8 hours by
 default). Sessions are signed HttpOnly/SameSite=Lax cookies holding identity
@@ -337,6 +343,15 @@ Use HTTPS and `SESSION_HTTPS_ONLY=true` in production. Startup fails if Microsof
 auth configuration is missing/unsafe. Access logs are disabled in the provided
 launch commands to avoid recording callback authorization codes; redact query
 strings in any reverse proxy/platform logs too.
+
+Microsoft sign-in logs include a random attempt ID, authentication stages,
+access-policy decisions, and safe failure types or HTTP status codes. They omit
+user identities, credentials, tokens, and callback parameters. Use `LOG_LEVEL=INFO`
+to see these events and restrict access to logs. Run Uvicorn with `--no-access-log`
+and avoid verbose HTTP-client logs that could expose authentication data.
+Set `LOG_FILE=logs/app.log` to persist application logs; Uvicorn access and HTTP
+client logs are excluded. Application logs can contain operational information,
+so protect and retain them according to your organization's policy.
 
 Tests: `python -m pytest -q tests/test_auth.py tests/test_auth_password.py tests/test_auth_microsoft.py`.
 Microsoft tests use a signed local OIDC provider double and mocked Graph; they

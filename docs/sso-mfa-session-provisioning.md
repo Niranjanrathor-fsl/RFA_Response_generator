@@ -39,8 +39,9 @@ Instead of editing `access/d_and_above_dso.json`, access can be managed in Entra
 
 If either is set, a user is admitted when they hold one of the groups or roles; the
 JSON allowlist is neither read nor required. Tenant, MFA, Graph `userType=Member`
-and `oid` binding checks still apply. If neither is set, the legacy allowlist file
-behaves exactly as before.
+and `oid` binding checks still apply. If neither is set, `AUTH_USE_ALLOWLIST=true`
+uses the allowlist; `AUTH_USE_ALLOWLIST=false` skips it and permits qualifying
+tenant members without a per-user restriction.
 
 Group overage (token carries `_claim_names` instead of `groups`) is denied and
 logged; use app roles or restrict group assignment.
